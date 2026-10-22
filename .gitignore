@@ -1,0 +1,12 @@
+.env
+data/
+output/
+tools/whisper/
+backend/.venv/
+__pycache__/
+.pytest_cache/
+web/node_modules/
+web/dist/
+*.mp4
+*.srt
+*.tsbuildinfo

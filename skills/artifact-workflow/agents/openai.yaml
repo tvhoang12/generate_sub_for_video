@@ -1,0 +1,4 @@
+interface:
+  display_name: "Artifact Workflow"
+  short_description: "Generate and update governed artifacts"
+  default_prompt: "Use $artifact-workflow to generate or amend an AI Project OS artifact."

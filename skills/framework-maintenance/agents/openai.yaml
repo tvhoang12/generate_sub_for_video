@@ -1,0 +1,4 @@
+interface:
+  display_name: "Framework Maintenance"
+  short_description: "Maintain and evolve AI Project OS"
+  default_prompt: "Use $framework-maintenance to review or change AI Project OS safely."

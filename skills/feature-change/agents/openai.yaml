@@ -1,0 +1,4 @@
+interface:
+  display_name: "Feature Change"
+  short_description: "Route and govern product changes"
+  default_prompt: "Use $feature-change to classify and plan this product change."

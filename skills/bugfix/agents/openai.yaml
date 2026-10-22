@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bug Fix"
+  short_description: "Diagnose and restore approved behavior"
+  default_prompt: "Use $bugfix to diagnose and fix this reported defect."

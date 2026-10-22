@@ -1,0 +1,15 @@
+.env
+data/
+output/
+tools/
+scripts/
+design-system/
+skills/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+web/node_modules/
+web/dist/
+backend/tests/
+*.mp4
+*.srt
