@@ -24,35 +24,23 @@ class Settings:
 
     ffmpeg: str = field(default_factory=lambda: os.getenv("FFMPEG_BIN", "ffmpeg"))
     ffprobe: str = field(default_factory=lambda: os.getenv("FFPROBE_BIN", "ffprobe"))
-    whisper_dir: Path = field(default_factory=lambda: _path("WHISPER_DIR", PROJECT_ROOT / "tools" / "whisper"))
-    whisper_model: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "ggml-large-v3-turbo-q5_0.bin"))
-    vad_model: str = field(default_factory=lambda: os.getenv("VAD_MODEL", "ggml-silero-v5.1.2.bin"))
-    whisper_threads: int = field(default_factory=lambda: int(os.getenv("WHISPER_THREADS", str(os.cpu_count() or 4))))
+    funasr_model: str = field(default_factory=lambda: os.getenv("FUNASR_MODEL", "iic/SenseVoiceSmall"))
+    funasr_vad_model: str = field(default_factory=lambda: os.getenv("FUNASR_VAD_MODEL", "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"))
+    funasr_punc_model: str = field(default_factory=lambda: os.getenv("FUNASR_PUNC_MODEL", ""))
+    funasr_device: str = field(default_factory=lambda: os.getenv("FUNASR_DEVICE", "cpu"))
+    funasr_threads: int = field(default_factory=lambda: int(os.getenv("FUNASR_THREADS", str(os.cpu_count() or 4))))
+    models_dir: Path = field(default_factory=lambda: _path("MODELS_DIR", PROJECT_ROOT / "models"))
 
-    # "claude" | "openai" | "mock" (mock is for tests and local UI work only)
-    translator: str = field(default_factory=lambda: os.getenv("TRANSLATOR_PROVIDER", "claude").lower())
+    # "gemini" | "claude" | "openai" | "mock" (mock is for tests and local UI work only)
+    translator: str = field(default_factory=lambda: os.getenv("TRANSLATOR_PROVIDER", "gemini").lower())
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"))
     claude_model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-5-5"))
     claude_effort: str = field(default_factory=lambda: os.getenv("CLAUDE_EFFORT", "medium"))
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-5"))
 
     max_cue_seconds: float = field(default_factory=lambda: float(os.getenv("MAX_CUE_SECONDS", "7")))
     video_crf: int = field(default_factory=lambda: int(os.getenv("VIDEO_CRF", "20")))
-
-    @property
-    def whisper_cli(self) -> Path:
-        return self.whisper_dir / "bin" / f"whisper-cli{_EXE}"
-
-    @property
-    def vad_cli(self) -> Path:
-        return self.whisper_dir / "bin" / f"whisper-vad-speech-segments{_EXE}"
-
-    @property
-    def whisper_model_path(self) -> Path:
-        return self.whisper_dir / "models" / self.whisper_model
-
-    @property
-    def vad_model_path(self) -> Path:
-        return self.whisper_dir / "models" / self.vad_model
 
     @property
     def db_path(self) -> Path:
@@ -64,3 +52,6 @@ class Settings:
 
 
 settings = Settings()
+if "MODELSCOPE_CACHE" not in os.environ:
+    os.environ["MODELSCOPE_CACHE"] = str(settings.models_dir)
+

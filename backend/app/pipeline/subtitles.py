@@ -8,7 +8,7 @@ TRIM_SLACK_MS = 1000
 
 _TS = r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})"
 _CUE_RE = re.compile(rf"{_TS}\s*-->\s*{_TS}")
-# Whole-line sound tags whisper sometimes emits: [Music], (laughs), ♪ ... ♪
+# Whole-line sound tags ASR models sometimes emit: [Music], (laughs), ♪ ... ♪
 _NON_SPEECH_RE = re.compile(r"^\s*(\[[^\]]*\]|\([^)]*\)|[♪♫\s]+)\s*$")
 
 
@@ -99,7 +99,7 @@ def is_non_speech(text: str) -> bool:
 def tighten_timing(cues: list[Cue], speech: list[tuple[int, int]], max_cue_ms: int) -> list[Cue]:
     """Fit each cue to the voice activity inside it, cap its length, and stop overlaps.
 
-    Whisper sometimes stretches a cue across a long pause (one line on screen for 17 s while
+    ASR models sometimes stretch a cue across a long pause (one line on screen for 17 s while
     the speech lasts 1.5 s). The VAD regions are measured on the original audio, so trimming a
     cue to the regions it overlaps puts it back where the words are actually spoken.
     """
@@ -115,8 +115,8 @@ def tighten_timing(cues: list[Cue], speech: list[tuple[int, int]], max_cue_ms: i
             if end - speech_end > TRIM_SLACK_MS:
                 end = speech_end
         if end - start > max_cue_ms:
-            # Keep the tail: a stretched cue's words are usually at the end, right before the next line.
-            start = end - max_cue_ms
+            # Cap maximum cue duration without cutting off the start of speech
+            end = start + max_cue_ms
         fitted.append(replace(cue, start_ms=start, end_ms=end))
 
     result: list[Cue] = []

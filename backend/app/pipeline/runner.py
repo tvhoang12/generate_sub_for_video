@@ -79,7 +79,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
     work.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
     stem = safe_name(job.title)
-    report: dict = {"dropped": [], "warnings": [], "outputs": [], "suggested_terms": []}
+    report: dict = {"dropped": [], "warnings": [], "outputs": [], "suggested_terms": [], "homophone_corrections": []}
 
     provider = provider_factory()
     _update(job_id, status=JobStatus.RUNNING, step="extract", progress=2, error=None, provider=provider.name,
@@ -96,39 +96,56 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
     cues = tighten_timing(cues, speech, int(settings.max_cue_seconds * 1000))
     report["source_language"] = detected
 
-    _update(job_id, step="clean", progress=30, report=report)
+    _update(job_id, step="clean", progress=25, report=report)
     translator = Translator(provider, film_ctx)
-    cleaned = translator.clean([{"id": c.id, "text": c.text} for c in cues])
-    by_id = {line.id: line for line in cleaned.lines}
-    kept: list[Cue] = []
-    for cue in cues:
-        line = by_id[cue.id]
-        if line.unclear:
-            # Fully automatic mode: an unintelligible line is left out of the video and listed in the report.
-            report["dropped"].append({"id": cue.id, "start": format_timestamp(cue.start_ms),
-                                      "end": format_timestamp(cue.end_ms), "text": line.text})
-        else:
-            kept.append(Cue(cue.id, cue.start_ms, cue.end_ms, line.text.strip()))
-    report["suggested_terms"] = _save_suggestions(job, cleaned.new_terms)
+    raw_transcript = " ".join(c.text for c in cues)
+    global_context = translator.extract_global_context(raw_transcript)
+    report["global_context"] = global_context
+    log.info("Job %d: Trích xuất ngữ cảnh toàn cục: %s", job_id, global_context[:200])
 
-    source_srt = out / f"{stem}.{detected}.srt"
-    source_srt.write_text(to_srt(kept), encoding="utf-8")
-    report["outputs"].append({"file": source_srt.name, "kind": "srt", "lang": detected})
-    _update(job_id, progress=40, report=report)
-
-    lines = [{"id": c.id, "text": c.text} for c in kept]
     burn_files: dict[str, Path] = {}
+    homophone_fixed_source: dict[int, str] = {}
+
     for i, lang in enumerate(languages):
-        result = translator.translate(lines, lang)
-        text_by_id = {l.id: l.text.strip() for l in result.lines}
-        translated = [Cue(c.id, c.start_ms, c.end_ms, text_by_id[c.id]) for c in kept]
+        _update(job_id, step="translate", progress=35 + int(30 * i / len(languages)), report=report)
+        fixed_src_by_id, trans_by_id = translator.translate_in_batches(
+            cues,
+            lang=lang,
+            source_language=detected,
+            global_context=global_context,
+            batch_size=35,
+        )
+
+        if not homophone_fixed_source:
+            homophone_fixed_source = fixed_src_by_id
+            for c in cues:
+                fixed = fixed_src_by_id.get(c.id, c.text)
+                if fixed != c.text:
+                    report["homophone_corrections"].append({
+                        "id": c.id,
+                        "original": c.text,
+                        "corrected": fixed,
+                    })
+            if report["homophone_corrections"]:
+                log.info("Job %d: Phát hiện và sửa %d lỗi đồng âm", job_id, len(report["homophone_corrections"]))
+
+        translated = [Cue(c.id, c.start_ms, c.end_ms, trans_by_id.get(c.id, "")) for c in cues]
         srt = out / f"{stem}.{lang.code}.srt"
         srt.write_text(to_srt(translated), encoding="utf-8")
         ass = work / f"{lang.code}.ass"
         ass.write_text(to_ass(translated, lang.font), encoding="utf-8")
         burn_files[lang.code] = ass
         report["outputs"].append({"file": srt.name, "kind": "srt", "lang": lang.code})
-        _update(job_id, step="translate", progress=40 + int(25 * (i + 1) / len(languages)), report=report)
+
+    # Write source SRT with corrected homophones
+    source_cues = [
+        Cue(c.id, c.start_ms, c.end_ms, homophone_fixed_source.get(c.id, c.text))
+        for c in cues
+    ]
+    source_srt = out / f"{stem}.{detected}.srt"
+    source_srt.write_text(to_srt(source_cues), encoding="utf-8")
+    report["outputs"].append({"file": source_srt.name, "kind": "srt", "lang": detected})
+    _update(job_id, progress=65, report=report)
 
     for i, lang in enumerate(languages):
         _update(job_id, step="render", progress=65 + int(35 * i / len(languages)))
@@ -141,7 +158,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
 
 
 class JobRunner:
-    """A single worker thread: CPU-bound whisper/ffmpeg runs are not worth parallelising on one machine."""
+    """A single worker thread: CPU-bound FunASR/ffmpeg runs are not worth parallelising on one machine."""
 
     def __init__(self, provider_factory: Callable[[], LLMProvider] = make_provider) -> None:
         self._queue: queue.Queue[int] = queue.Queue()

@@ -127,6 +127,7 @@ export function JobDetailPage() {
 
   const dropped = job.report.dropped ?? [];
   const suggested = job.report.suggested_terms ?? [];
+  const homophones = job.report.homophone_corrections ?? [];
   const finished = job.status === "done" || job.status === "failed";
 
   return (
@@ -170,9 +171,12 @@ export function JobDetailPage() {
                 const srt = srtFor(code);
                 return (
                   <li key={code} className="flex flex-wrap items-center justify-between gap-3 py-3">
-                    <p className="font-semibold">{langLabel(code)}</p>
+                    <div>
+                      <p className="font-semibold">{langLabel(code)}</p>
+                      {video && <p className="text-xs text-muted-foreground font-mono">{video.file}</p>}
+                    </div>
                     <div className="flex flex-wrap gap-2">
-                      {video && <LinkButton href={api.fileUrl(job.id, video.file)} icon={Download} download>Video</LinkButton>}
+                      {video && <LinkButton href={api.fileUrl(job.id, video.file)} icon={Download} download>Video ({langLabel(code)})</LinkButton>}
                       {srt && <LinkButton href={api.fileUrl(job.id, srt.file)} icon={FileText} variant="ghost" download>Phụ đề .srt</LinkButton>}
                     </div>
                   </li>
@@ -217,7 +221,7 @@ export function JobDetailPage() {
           </Card>
         )}
 
-        {(dropped.length > 0 || suggested.length > 0) && (
+        {(dropped.length > 0 || suggested.length > 0 || homophones.length > 0) && (
           <Card title="Ghi chú từ AI">
             {dropped.length > 0 && (
               <div className="mb-5">
@@ -229,6 +233,37 @@ export function JobDetailPage() {
                     <li key={d.id} className="flex gap-3"><span className="shrink-0 font-mono text-xs text-muted-foreground">{d.start.slice(0, 8)}</span><span className="italic">{d.text}</span></li>
                   ))}
                 </ul>
+              </div>
+            )}
+            {homophones.length > 0 && (
+              <div className="mb-5">
+                <p className="text-sm font-semibold text-foreground mb-2">
+                  Đã kiểm tra và sửa {homophones.length} lỗi đồng âm tiếng Trung (同音字 / 近音词)
+                </p>
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-border bg-muted/60 font-semibold text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2">Dòng</th>
+                        <th className="px-3 py-2">Chữ gốc ASR (lỗi đồng âm)</th>
+                        <th className="px-3 py-2">Đã sửa theo ngữ cảnh</th>
+                        <th className="px-3 py-2">Pinyin</th>
+                        <th className="px-3 py-2">Ngữ cảnh / Giải thích</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {homophones.map((h, idx) => (
+                        <tr key={idx} className="hover:bg-muted/30">
+                          <td className="px-3 py-2 font-mono text-muted-foreground">#{h.id}</td>
+                          <td className="px-3 py-2 font-medium text-destructive line-through">{h.original}</td>
+                          <td className="px-3 py-2 font-semibold text-primary-strong">{h.corrected}</td>
+                          <td className="px-3 py-2 font-mono text-muted-foreground">{h.pinyin}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{h.explanation}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
             {suggested.length > 0 && (

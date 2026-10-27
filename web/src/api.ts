@@ -61,6 +61,13 @@ export interface Job {
     warnings?: string[];
     outputs?: JobOutput[];
     suggested_terms?: { term: string; note: string }[];
+    homophone_corrections?: {
+      id: number;
+      original: string;
+      corrected: string;
+      pinyin: string;
+      explanation: string;
+    }[];
   };
   created_at: string;
   finished_at: string | null;

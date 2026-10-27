@@ -2,8 +2,6 @@ services:
   substudio:
     build:
       context: .
-      args:
-        WHISPER_NATIVE: "ON"
     image: substudio:latest
     container_name: substudio
     restart: unless-stopped
@@ -12,5 +10,9 @@ services:
     env_file: .env
     environment:
       DATA_DIR: /data
+      MODELS_DIR: /models
     volumes:
       - ./data:/data
+      - ./models:/models
+      - ./backend/app:/app/backend/app
+      - /var/www/hls/substudio/jobs:/data/jobs

@@ -34,7 +34,7 @@ LANGUAGES: dict[str, Language] = {
     ]
 }
 
-# Spoken languages whisper is asked to recognise; "auto" lets it detect.
+# Spoken languages FunASR is asked to recognise; "auto" lets it detect.
 SOURCE_LANGUAGES: dict[str, str] = {
     "auto": "Tự nhận diện",
     "en": "Tiếng Anh",
