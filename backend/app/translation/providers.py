@@ -221,8 +221,6 @@ class ClaudeProvider:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return response.content[0].text if response.content else ""
-
     def complete_batch(self, system: str, user: str) -> list[BatchItem]:
         res = self.complete(system, user, BatchTranslateResult)
         return res.items
@@ -231,27 +229,107 @@ class ClaudeProvider:
 class OpenAIProvider:
     name = "openai"
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
+        import os
         import openai
 
-        self._client = openai.OpenAI()
-        self._model = settings.openai_model
+        api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ProviderError("Chưa cấu hình OPENAI_API_KEY. Vui lòng thêm OPENAI_API_KEY vào file .env")
+        self._client = openai.OpenAI(api_key=api_key)
+        self._model = model or settings.openai_model
+
+    def _call_with_retry(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        import logging
+        import time
+
+        max_retries = 5
+        delay = 2.0
+        log_fn = logging.getLogger("substudio.providers").warning
+        for attempt in range(1, max_retries + 1):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                err_str = str(e).lower()
+                is_transient = (
+                    "429" in err_str
+                    or "rate_limit" in err_str
+                    or "ratelimit" in err_str
+                    or "503" in err_str
+                    or "502" in err_str
+                    or "500" in err_str
+                    or "unavailable" in err_str
+                    or "connection" in err_str
+                    or "timeout" in err_str
+                )
+                if is_transient and attempt < max_retries:
+                    log_fn(
+                        "OpenAI API transient error (%s), retrying in %.1fs (attempt %d/%d)...",
+                        e, delay, attempt, max_retries,
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise
 
     def complete(self, system: str, user: str, schema: type[T]) -> T:
-        response = self._client.responses.parse(
-            model=self._model, instructions=system, input=user, text_format=schema
-        )
-        if response.output_parsed is None:
-            raise ProviderError("OpenAI không trả về JSON hợp lệ")
-        return response.output_parsed
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            response = self._call_with_retry(
+                self._client.chat.completions.parse,
+                model=self._model,
+                messages=messages,
+                response_format=schema,
+                temperature=0.2,
+            )
+        except Exception as e:
+            raise ProviderError(f"Lỗi khi gọi OpenAI API ({self._model}): {e}") from e
+
+        choice = response.choices[0] if (response and response.choices) else None
+        if not choice or not choice.message:
+            raise ProviderError("OpenAI không trả về nội dung")
+
+        refusal = getattr(choice.message, "refusal", None)
+        if refusal:
+            raise ProviderError(f"OpenAI từ chối yêu cầu do bộ lọc an toàn: {refusal}")
+
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason == "length":
+            raise TokenOverflowError("Phản hồi của OpenAI bị cắt ngắn (max_tokens/length)")
+
+        if choice.message.parsed is not None:
+            return choice.message.parsed
+
+        raw_text = (choice.message.content or "").strip()
+        if not raw_text:
+            raise ProviderError("OpenAI không trả về nội dung")
+
+        clean_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r"\s*```$", "", clean_text).strip()
+
+        try:
+            return schema.model_validate_json(clean_text)
+        except Exception as e:
+            raise ProviderError(f"OpenAI không trả về JSON hợp lệ theo schema: {e}") from e
 
     def extract_global_context(self, system: str, user: str) -> str:
-        res = self._client.chat.completions.create(
-            model=self._model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=1024,
-        )
-        return res.choices[0].message.content or ""
+        try:
+            res = self._call_with_retry(
+                self._client.chat.completions.create,
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.2,
+                max_tokens=1024,
+            )
+            return (res.choices[0].message.content or "").strip()
+        except Exception as e:
+            raise ProviderError(f"Lỗi khi trích xuất ngữ cảnh toàn cục qua OpenAI: {e}") from e
 
     def complete_batch(self, system: str, user: str) -> list[BatchItem]:
         res = self.complete(system, user, BatchTranslateResult)
@@ -262,7 +340,7 @@ class MockProvider:
     """Offline stand-in for tests and UI work: echoes the source, writes placeholder target script."""
 
     name = "mock"
-    _SAMPLE = {"lo": "ທົດສອບ", "my": "စမ်းသပ်", "km": "សាកល្បង", "th": "ทดสอบ", "zh": "测试"}
+    _SAMPLE = {"lo": "ທົດສອບ", "my": "စမ်းသပ်", "km": "សាកລ្បង", "th": "ทดสอบ", "zh": "测试"}
 
     def complete(self, system: str, user: str, schema: type[T]) -> T:
         lines = json.loads(re.search(r"<lines>\s*(.*?)\s*</lines>", user, re.S).group(1))
@@ -295,14 +373,15 @@ class MockProvider:
         ]
 
 
-def make_provider(name: str | None = None) -> LLMProvider:
+def make_provider(name: str | None = None, model: str | None = None) -> LLMProvider:
     name = (name or settings.translator).lower()
     if name == "gemini":
-        return GeminiProvider()
+        return GeminiProvider(model=model)
     if name == "claude":
         return ClaudeProvider()
     if name == "openai":
-        return OpenAIProvider()
+        return OpenAIProvider(model=model)
     if name == "mock":
         return MockProvider()
     raise ValueError(f"TRANSLATOR_PROVIDER không hợp lệ: {name} (gemini | claude | openai | mock)")
+

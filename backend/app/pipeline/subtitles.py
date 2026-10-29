@@ -53,6 +53,9 @@ def to_ass(cues: list[Cue], font: str) -> str:
 
     Burning ASS through ffmpeg's `ass` filter is what allows complex text shaping; the `subtitles`
     filter on Debian's ffmpeg shapes simply and breaks Khmer clusters (stacked consonants, split vowels).
+    Layer 0 (Backdrop) creates a softly blurred, semi-transparent dark pill behind the subtitle to mask
+    original hardcoded subtitles (e.g. Chinese characters) without needing intrusive solid bars.
+    Layer 1 (Default) renders crisp white bold text with a black outline and subtle drop shadow.
     """
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -62,16 +65,21 @@ WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font},20,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,1.6,0.8,2,10,10,22,1
-
+Format:Name,	Fontname,	Fontsize,PrimaryColour,	SecondaryColour,OutlineColour,	BackColour,	Bold,	Italic,	Underline,	StrikeOut,	ScaleX,	ScaleY,	Spacing,Angle,	BorderStyle,Outline,Shadow,	Alignment,MarginL,	MarginR,MarginV,Encoding
+Style: Default,	{font},	    25,	    &H00FFFFFF,	    &H000000FF,	    &H00000000,	    &H80000000,	1,	    0,	    0,	        0,	        100,	100,	0,	    0,	    1,	        1.6,	0.5,	2,	    10,	        10,	    12,	    1
+Style: Backdrop,{font},	    25,	    &HFF000000,	    &H000000FF,	    &H20000000,	    &H80FFFFFF,	1,	    0,	    0,	        0,	        100,	100,	0,	    0,	    1,	        10,	    0,	    2,	    10,	        10,	    12,	    1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = []
     for c in cues:
         text = c.text.strip().replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
-        lines.append(f"Dialogue: 0,{_ass_time(c.start_ms)},{_ass_time(c.end_ms)},Default,,0,0,0,,{text}")
+        start = _ass_time(c.start_ms)
+        end = _ass_time(c.end_ms)
+        # Layer 0: softly blurred dark backdrop to obscure old hardcoded subtitles
+        lines.append(f"Dialogue: 0,{start},{end},Backdrop,,0,0,0,,{{\\blur10}}{text}")
+        # Layer 1: sharp white text with black border and subtle shadow
+        lines.append(f"Dialogue: 1,{start},{end},Default,,0,0,0,,{text}")
     return header + "\n".join(lines) + "\n"
 
 
