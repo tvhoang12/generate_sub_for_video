@@ -14,10 +14,14 @@ from app.translation.homophones import (
 from app.translation.providers import (
     GeminiProvider,
     MockProvider,
+    OpenAIProvider,
     ProviderError,
+    TokenOverflowError,
     make_provider,
 )
 from app.translation.schemas import (
+    BatchItem,
+    BatchTranslateResult,
     CleanResult,
     CleanedLine,
     HomophoneCorrection,
@@ -38,6 +42,13 @@ def test_make_provider_defaults_and_options():
     p_mock = make_provider("mock")
     assert isinstance(p_mock, MockProvider)
     assert p_mock.name == "mock"
+
+    # OpenAI provider with key
+    with patch("app.translation.providers.settings", MagicMock(openai_api_key="mock-key")), patch("openai.OpenAI"):
+        p_openai = make_provider("openai", model="gpt-4o-mini")
+        assert isinstance(p_openai, OpenAIProvider)
+        assert p_openai.name == "openai"
+        assert p_openai._model == "gpt-4o-mini"
 
     # Invalid provider
     with pytest.raises(ValueError, match="TRANSLATOR_PROVIDER không hợp lệ"):
@@ -98,6 +109,118 @@ def test_gemini_provider_safety_refusal(monkeypatch):
         provider = GeminiProvider()
         with pytest.raises(ProviderError, match="an toàn"):
             provider.complete("system", "user", DummySchema)
+
+
+def test_openai_provider_missing_api_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    with patch("app.translation.providers.settings", MagicMock(openai_api_key="")):
+        with pytest.raises(ProviderError, match="Chưa cấu hình OPENAI_API_KEY"):
+            OpenAIProvider()
+
+
+def test_openai_provider_complete_success(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.refusal = None
+    mock_choice.message.parsed = DummySchema(id=1, text="Xin chào thế giới")
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.parse.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = OpenAIProvider()
+        result = provider.complete("system", "user", DummySchema)
+        assert result.id == 1
+        assert result.text == "Xin chào thế giới"
+
+
+def test_openai_provider_json_fallback(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.refusal = None
+    mock_choice.message.parsed = None
+    mock_choice.message.content = '```json\n{"id": 2, "text": "Phụ đề dịch"}\n```'
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.parse.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = OpenAIProvider()
+        result = provider.complete("system", "user", DummySchema)
+        assert result.id == 2
+        assert result.text == "Phụ đề dịch"
+
+
+def test_openai_provider_refusal(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.refusal = "Nội dung vi phạm chính sách"
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.parse.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = OpenAIProvider()
+        with pytest.raises(ProviderError, match="an toàn"):
+            provider.complete("system", "user", DummySchema)
+
+
+def test_openai_provider_token_overflow(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "length"
+    mock_choice.message.refusal = None
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.parse.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = OpenAIProvider()
+        with pytest.raises(TokenOverflowError, match="max_tokens"):
+            provider.complete("system", "user", DummySchema)
+
+
+def test_openai_provider_extract_global_context(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Bối cảnh: Phim cổ trang Trung Quốc"
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = OpenAIProvider()
+        ctx = provider.extract_global_context("system", "user")
+        assert "Phim cổ trang" in ctx
+
+
+def test_openai_provider_complete_batch(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.refusal = None
+    mock_choice.message.parsed = BatchTranslateResult(
+        items=[BatchItem(id=1, fixed_src="你好", trans="Chào bạn")]
+    )
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.parse.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = OpenAIProvider()
+        items = provider.complete_batch("system", "user")
+        assert len(items) == 1
+        assert items[0].id == 1
+        assert items[0].trans == "Chào bạn"
+
 
 
 def test_chinese_homophone_prompts():

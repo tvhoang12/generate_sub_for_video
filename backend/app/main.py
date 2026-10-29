@@ -77,7 +77,11 @@ def _api_routes():
 
     @api.get("/meta")
     def meta():
-        model = {"claude": settings.claude_model, "openai": settings.openai_model}.get(settings.translator, "")
+        model = {
+            "claude": settings.claude_model,
+            "openai": settings.openai_model,
+            "gemini": settings.gemini_model,
+        }.get(settings.translator, "")
         return {
             "languages": [{"code": l.code, "label": l.label} for l in LANGUAGES.values()],
             "source_languages": [{"code": c, "label": n} for c, n in SOURCE_LANGUAGES.items()],

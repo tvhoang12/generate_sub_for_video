@@ -40,8 +40,8 @@ Mở `http://localhost:8000`. Máy khác trong mạng nội bộ truy cập qua 
 | `TRANSLATOR_PROVIDER` | `gemini` | `gemini`, `claude`, `openai`, hoặc `mock` (bản dịch giả, chỉ để thử) |
 | `GEMINI_API_KEY` | *(trống)* | API key cho Google Gemini |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Model Gemini (Gemini Flash Lite dịch theo ngữ cảnh, kiểm tra lỗi đồng âm tiếng Trung) |
-| `CLAUDE_MODEL` / `CLAUDE_EFFORT` | `claude-opus-5-5` / `medium` | Model Claude và mức độ suy nghĩ |
-| `OPENAI_MODEL` | `gpt-5` | Model OpenAI |
+| `OPENAI_API_KEY` | *(trống)* | API key cho OpenAI |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model OpenAI (`gpt-4o-mini`: nhanh, rẻ; `gpt-4o`: văn phong dịch cao cấp nhất) |
 | `FUNASR_THREADS` | số nhân CPU | Số luồng dùng cho nhận dạng giọng nói |
 | `MAX_CUE_SECONDS` | `7` | Thời gian tối đa một dòng phụ đề hiện trên màn hình |
 | `VIDEO_CRF` | `20` | Chất lượng video xuất ra (số nhỏ hơn: đẹp hơn, file nặng hơn) |
