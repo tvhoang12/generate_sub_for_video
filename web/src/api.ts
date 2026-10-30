@@ -43,6 +43,21 @@ export interface JobOutput {
   lang: string;
 }
 
+export interface SubtitleConfig {
+  font?: string;
+  font_size?: number;
+  color?: string;
+  color_border?: string;
+  bold?: boolean;
+  italic?: boolean;
+  margin_l?: number;
+  margin_r?: number;
+  margin_v?: number;
+  outline?: number;
+  shadow?: number;
+  burn_video?: boolean;
+}
+
 export interface Job {
   id: number;
   film_id: number | null;
@@ -50,6 +65,7 @@ export interface Job {
   video_filename: string;
   languages: string[];
   episode_notes: string;
+  subtitle_config?: SubtitleConfig;
   status: JobStatus;
   step: string | null;
   progress: number;

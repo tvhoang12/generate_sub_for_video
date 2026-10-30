@@ -1,18 +1,29 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { FileVideo, Languages, Play, Upload, X } from "lucide-react";
-import { api, formatBytes, uploadJob, type Film } from "../api";
+import { api, formatBytes, uploadJob, type Film, type SubtitleConfig } from "../api";
 import { useMeta } from "../meta";
 import { Alert, Button, Card, Field, PageHeader, ProgressBar } from "../components/ui";
+import { DEFAULT_SUBTITLE_CONFIG, SubtitleConfigCard } from "../components/SubtitleConfigCard";
 
 const ACCEPT = ".mp4,.mov,.mkv,.webm,.m4v";
 const LAST_LANGS_KEY = "substudio:last-languages";
+const LAST_SUB_CONFIG_KEY = "substudio:last-subtitle-config";
 
 function loadLastLanguages(): string[] {
   try {
     return JSON.parse(localStorage.getItem(LAST_LANGS_KEY) || "[]");
   } catch {
     return [];
+  }
+}
+
+function loadLastSubtitleConfig(): SubtitleConfig {
+  try {
+    const raw = localStorage.getItem(LAST_SUB_CONFIG_KEY);
+    return raw ? { ...DEFAULT_SUBTITLE_CONFIG, ...JSON.parse(raw) } : DEFAULT_SUBTITLE_CONFIG;
+  } catch {
+    return DEFAULT_SUBTITLE_CONFIG;
   }
 }
 
@@ -27,6 +38,8 @@ export function NewJobPage() {
   const [filmId, setFilmId] = useState<string>("");
   const [languages, setLanguages] = useState<string[]>(loadLastLanguages);
   const [notes, setNotes] = useState("");
+  const [subConfig, setSubConfig] = useState<SubtitleConfig>(loadLastSubtitleConfig);
+  const [burnVideo, setBurnVideo] = useState(true);
   const [upload, setUpload] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
@@ -62,11 +75,14 @@ export function NewJobPage() {
     form.append("languages", languages.join(","));
     form.append("title", title);
     form.append("episode_notes", notes);
+    const payloadConfig = { ...subConfig, burn_video: burnVideo };
+    form.append("subtitle_config", JSON.stringify(payloadConfig));
     if (filmId) form.append("film_id", filmId);
     setError(null);
     setUpload(0);
     try {
       localStorage.setItem(LAST_LANGS_KEY, JSON.stringify(languages));
+      localStorage.setItem(LAST_SUB_CONFIG_KEY, JSON.stringify(payloadConfig));
     } catch {
       /* storage unavailable: nothing to remember */
     }
@@ -174,6 +190,39 @@ export function NewJobPage() {
               </Field>
             </div>
           </Card>
+
+          {/* 4. Subtitle Configuration Card */}
+          <SubtitleConfigCard value={subConfig} onChange={setSubConfig} />
+
+          {/* 5. Tùy chọn xuất file */}
+          <Card title="5. Tùy chọn xuất file" description="Tối ưu thời gian xử lý tùy theo nhu cầu sử dụng thực tế.">
+            <div className="flex flex-col gap-4">
+              <label className="flex items-start gap-3.5 cursor-pointer rounded-xl border border-slate-200 bg-white p-4 transition-colors hover:border-primary/50">
+                <input
+                  type="checkbox"
+                  checked={burnVideo}
+                  onChange={(e) => setBurnVideo(e.target.checked)}
+                  className="mt-1 size-5 rounded border-slate-300 text-primary focus:ring-primary"
+                />
+                <div className="flex flex-col gap-1">
+                  <span className="font-semibold text-foreground">
+                    Render video kèm phụ đề cứng (MP4)
+                  </span>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    {burnVideo ? (
+                      <>
+                        Hệ thống sẽ encode phụ đề dính vào video MP4. Đã tối ưu tốc độ nhanh hơn bằng preset <code>veryfast</code>.
+                      </>
+                    ) : (
+                      <>
+                        <strong className="text-emerald-600 font-semibold">⚡ Chế độ Siêu Tốc (~3 - 5 phút):</strong> Bỏ qua bước encode video, chỉ nhận dạng và dịch để xuất file phụ đề chuẩn <strong>SRT & ASS</strong>. Rất phù hợp nếu bạn muốn import phụ đề vào Premiere/CapCut hoặc tải lên YouTube/Facebook.
+                      </>
+                    )}
+                  </p>
+                </div>
+              </label>
+            </div>
+          </Card>
         </div>
 
         <aside className="lg:sticky lg:top-10 lg:self-start">
@@ -185,11 +234,44 @@ export function NewJobPage() {
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted-foreground">Ngôn ngữ</dt>
-                <dd className="text-right font-semibold">{languages.length ? `${languages.length} video đầu ra` : "—"}</dd>
+                <dd className="text-right font-semibold">
+                  {languages.length ? (burnVideo ? `${languages.length} video đầu ra` : `${languages.length} bản phụ đề`) : "—"}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">Chế độ xuất</dt>
+                <dd className="text-right font-semibold">
+                  {burnVideo ? "Video MP4 + SRT" : "⚡ Chỉ xuất SRT/ASS"}
+                </dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted-foreground">Phim</dt>
                 <dd className="truncate text-right font-semibold">{film?.name ?? "—"}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">Phụ đề</dt>
+                <dd className="flex items-center gap-1.5 text-right font-semibold">
+                  <span
+                    className="size-3 shrink-0 rounded-full border border-slate-400"
+                    style={{ backgroundColor: subConfig.color || "#FFFFFF" }}
+                    title={`Màu chữ: ${subConfig.color || "#FFFFFF"}`}
+                  />
+                  <span
+                    className="size-3 shrink-0 rounded-full border border-slate-400"
+                    style={{ backgroundColor: subConfig.color_border || "#000000" }}
+                    title={`Màu viền: ${subConfig.color_border || "#000000"}`}
+                  />
+                  <span>{subConfig.font_size || 25}px</span>
+                  {(subConfig.bold || subConfig.italic) && (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      ({[subConfig.bold ? "Đậm" : "", subConfig.italic ? "Nghiêng" : ""].filter(Boolean).join(", ")})
+                    </span>
+                  )}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">Lề dọc</dt>
+                <dd className="text-right font-semibold">{subConfig.margin_v ?? 12}px</dd>
               </div>
             </dl>
             {error && <div className="mt-4"><Alert tone="error" title="Không tải lên được">{error}</Alert></div>}

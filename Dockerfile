@@ -21,6 +21,10 @@ WORKDIR /app
 COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
+# Custom fonts: Phetsarath OT (Lao), Kantumruy Pro (Khmer)
+COPY backend/app/fonts /usr/local/share/fonts/custom
+RUN fc-cache -f
+
 # Model directory (persisted via volume mount ./models:/models for fast builds)
 ENV MODELS_DIR=/models MODELSCOPE_CACHE=/models
 RUN mkdir -p /models
