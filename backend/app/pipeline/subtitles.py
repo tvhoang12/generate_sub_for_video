@@ -48,15 +48,48 @@ def _ass_time(ms: int) -> str:
     return f"{hours}:{minutes:02d}:{seconds:02d}.{cs:02d}"
 
 
-def to_ass(cues: list[Cue], font: str) -> str:
+def hex_to_ass_color(hex_color: str, alpha: int = 0) -> str:
+    """Convert CSS hex color (#RRGGBB) to ASS color format (&HAABBGGRR)."""
+    c = hex_color.strip().lstrip("#")
+    if len(c) == 3:
+        c = "".join(ch * 2 for ch in c)
+    if len(c) != 6:
+        c = "FFFFFF"
+    r, g, b = c[0:2], c[2:4], c[4:6]
+    return f"&H{alpha:02X}{b.upper()}{g.upper()}{r.upper()}"
+
+
+def to_ass(cues: list[Cue], font: str, config: dict | None = None) -> str:
     """ASS script for burning. Same 384x288 canvas libass uses for SRT, so sizes match the old look.
 
     Burning ASS through ffmpeg's `ass` filter is what allows complex text shaping; the `subtitles`
     filter on Debian's ffmpeg shapes simply and breaks Khmer clusters (stacked consonants, split vowels).
     Layer 0 (Backdrop) creates a softly blurred, semi-transparent dark pill behind the subtitle to mask
     original hardcoded subtitles (e.g. Chinese characters) without needing intrusive solid bars.
-    Layer 1 (Default) renders crisp white bold text with a black outline and subtle drop shadow.
+    Layer 1 (Default) renders customizable text with a black outline and subtle drop shadow.
     """
+    cfg = config or {}
+    font_aliases: dict[str, str] = {
+        "phetsarath ot": "Phetsarath",
+        "phetsarath": "Phetsarath",
+        "kantumruy": "Kantumruy Pro",
+        "kantumruy pro": "Kantumruy Pro",
+    }
+    raw_font = str(cfg.get("font") or "").strip()
+    font_name = font_aliases.get(raw_font.lower(), raw_font) or font
+    fontsize = int(cfg.get("font_size") or 25)
+    color_hex = str(cfg.get("color") or "#FFFFFF")
+    color_border_hex = str(cfg.get("color_border") or "#000000")
+    primary_colour = hex_to_ass_color(color_hex, alpha=0)
+    border_colour = hex_to_ass_color(color_border_hex, alpha=0)
+    bold = 1 if cfg.get("bold", True) else 0
+    italic = 1 if cfg.get("italic", False) else 0
+    margin_l = int(cfg.get("margin_l") or 10)
+    margin_r = int(cfg.get("margin_r") or 10)
+    margin_v = int(cfg.get("margin_v") or 12)
+    outline = float(cfg.get("outline") or 1.6)
+    shadow = float(cfg.get("shadow") or 0.5)
+
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 384
@@ -65,9 +98,10 @@ WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
-Format:Name,	Fontname,	Fontsize,PrimaryColour,	SecondaryColour,OutlineColour,	BackColour,	Bold,	Italic,	Underline,	StrikeOut,	ScaleX,	ScaleY,	Spacing,Angle,	BorderStyle,Outline,Shadow,	Alignment,MarginL,	MarginR,MarginV,Encoding
-Style: Default,	{font},	    25,	    &H00FFFFFF,	    &H000000FF,	    &H00000000,	    &H80000000,	1,	    0,	    0,	        0,	        100,	100,	0,	    0,	    1,	        1.6,	0.5,	2,	    10,	        10,	    12,	    1
-Style: Backdrop,{font},	    25,	    &HFF000000,	    &H000000FF,	    &H20000000,	    &H80FFFFFF,	1,	    0,	    0,	        0,	        100,	100,	0,	    0,	    1,	        10,	    0,	    2,	    10,	        10,	    12,	    1
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{font_name},{fontsize},{primary_colour},&H000000FF,{border_colour},&H80000000,{bold},{italic},0,0,100,100,0,0,1,{outline},{shadow},2,{margin_l},{margin_r},{margin_v},1
+Style: Backdrop,{font_name},{fontsize},&HFF000000,&H000000FF,&H80000000,&H80FFFFFF,{bold},{italic},0,0,100,100,0,0,1,6,0,2,{margin_l},{margin_r},{margin_v},1
+
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
@@ -78,7 +112,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end = _ass_time(c.end_ms)
         # Layer 0: softly blurred dark backdrop to obscure old hardcoded subtitles
         lines.append(f"Dialogue: 0,{start},{end},Backdrop,,0,0,0,,{{\\blur10}}{text}")
-        # Layer 1: sharp white text with black border and subtle shadow
+        # Layer 1: sharp styled text with black border and subtle shadow
         lines.append(f"Dialogue: 1,{start},{end},Default,,0,0,0,,{text}")
     return header + "\n".join(lines) + "\n"
 
