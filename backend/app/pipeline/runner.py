@@ -71,6 +71,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         job = s.get(Job, job_id)
         film_ctx, source_language = _film_context(s, job)
         languages = [get_language(code) for code in job.languages]
+        subtitle_config = dict(job.subtitle_config or {})
 
     base = job_dir(job_id)
     video = base / "input" / job.video_filename
@@ -133,7 +134,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         srt = out / f"{stem}.{lang.code}.srt"
         srt.write_text(to_srt(translated), encoding="utf-8")
         ass = work / f"{lang.code}.ass"
-        ass.write_text(to_ass(translated, lang.font), encoding="utf-8")
+        ass.write_text(to_ass(translated, lang.font, config=subtitle_config), encoding="utf-8")
         burn_files[lang.code] = ass
         report["outputs"].append({"file": srt.name, "kind": "srt", "lang": lang.code})
 

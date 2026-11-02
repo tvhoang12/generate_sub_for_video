@@ -43,5 +43,56 @@ def test_ass_events_keep_line_breaks_and_escape_override_braces():
     from app.pipeline.subtitles import to_ass
 
     ass = to_ass([Cue(1, 61_230, 3_723_450, "ព្រមទាំង {x}\nline two")], "Noto Sans Khmer")
-    assert "Style: Default,Noto Sans Khmer,20," in ass
-    assert r"Dialogue: 0,0:01:01.23,1:02:03.45,Default,,0,0,0,,ព្រមទាំង \{x\}\Nline two" in ass
+    assert "Style: Default,Noto Sans Khmer,25," in ass
+    assert r"Dialogue: 1,0:01:01.23,1:02:03.45,Default,,0,0,0,,ព្រមទាំង \{x\}\Nline two" in ass
+
+
+def test_ass_border_and_shadow_configs():
+    from app.pipeline.subtitles import to_ass
+
+    cues = [Cue(1, 1000, 2000, "Sample")]
+
+    # Default has border outline=1.6 and shadow=0.5 with black shadow &H80000000
+    ass_default = to_ass(cues, "Arial")
+    assert ",1,1.6,0.5,2," in ass_default
+    assert ",&H80000000,1,0," in ass_default
+
+    # Disabling border sets outline to 0.0
+    ass_no_border = to_ass(cues, "Arial", {"has_border": False})
+    assert ",1,0.0,0.5,2," in ass_no_border
+
+    # Disabling shadow sets shadow to 0.0
+    ass_no_shadow = to_ass(cues, "Arial", {"has_shadow": False})
+    assert ",1,1.6,0.0,2," in ass_no_shadow
+
+    # Custom shadow color #FF0000 translates to ASS BackColour &H800000FF
+    ass_custom_shadow = to_ass(cues, "Arial", {"color_shadow": "#FF0000"})
+    assert ",&H800000FF,1,0," in ass_custom_shadow
+
+
+def test_ass_mask_configs():
+    from app.pipeline.subtitles import to_ass
+
+    cues = [Cue(1, 1000, 2000, "Sample")]
+
+    # Default has backdrop with blur10 and Dialogue 0
+    ass_default = to_ass(cues, "Arial")
+    assert r"Dialogue: 0,0:00:01.00,0:00:02.00,Backdrop,,0,0,0,,{\blur10}Sample" in ass_default
+
+    # Disabling mask removes Backdrop Dialogue
+    ass_disabled = to_ass(cues, "Arial", {"mask_enabled": False})
+    assert "Backdrop,,0,0,0" not in ass_disabled
+    assert "Default,,0,0,0" in ass_disabled
+
+    # Custom mask with rectangle shape, opacity 75%, blur 20
+    ass_custom = to_ass(cues, "Arial", {
+        "mask_color": "#0000FF",
+        "mask_opacity": 75,
+        "mask_blur": 20,
+        "mask_shape": "rectangle",
+    })
+    assert r"Dialogue: 0,0:00:01.00,0:00:02.00,Backdrop,,0,0,0,,{\blur20}Sample" in ass_custom
+    # BorderStyle 3 for rectangle
+    assert ",3,3,0,2," in ass_custom
+
+

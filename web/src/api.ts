@@ -48,6 +48,9 @@ export interface SubtitleConfig {
   font_size?: number;
   color?: string;
   color_border?: string;
+  has_border?: boolean;
+  has_shadow?: boolean;
+  color_shadow?: string;
   bold?: boolean;
   italic?: boolean;
   margin_l?: number;
@@ -56,6 +59,11 @@ export interface SubtitleConfig {
   outline?: number;
   shadow?: number;
   burn_video?: boolean;
+  mask_enabled?: boolean;
+  mask_color?: string;
+  mask_blur?: number;
+  mask_opacity?: number;
+  mask_shape?: "pill" | "rounded" | "rectangle" | "bar";
 }
 
 export interface Job {

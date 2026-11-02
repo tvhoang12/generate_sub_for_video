@@ -3,6 +3,7 @@ import {
   Bold,
   Check,
   Eye,
+  EyeOff,
   GripVertical,
   ImagePlus,
   Italic,
@@ -22,6 +23,9 @@ export const DEFAULT_SUBTITLE_CONFIG: Required<SubtitleConfig> = {
   font_size: 25,
   color: "#FFFFFF",
   color_border: "#000000",
+  has_border: true,
+  has_shadow: true,
+  color_shadow: "#000000",
   bold: true,
   italic: false,
   margin_l: 10,
@@ -30,7 +34,56 @@ export const DEFAULT_SUBTITLE_CONFIG: Required<SubtitleConfig> = {
   outline: 1.6,
   shadow: 0.5,
   burn_video: true,
+  mask_enabled: true,
+  mask_color: "#000000",
+  mask_blur: 12,
+  mask_opacity: 40,
+  mask_shape: "pill",
 };
+
+export function hexToRgba(hex: string, opacity: number): string {
+  const c = (hex || "#000000").replace("#", "").trim();
+  let r = 0,
+    g = 0,
+    b = 0;
+  if (c.length === 3) {
+    r = parseInt(c[0] + c[0], 16) || 0;
+    g = parseInt(c[1] + c[1], 16) || 0;
+    b = parseInt(c[2] + c[2], 16) || 0;
+  } else if (c.length === 6) {
+    r = parseInt(c.slice(0, 2), 16) || 0;
+    g = parseInt(c.slice(2, 4), 16) || 0;
+    b = parseInt(c.slice(4, 6), 16) || 0;
+  }
+  return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, opacity))})`;
+}
+
+const MASK_SHAPE_OPTIONS = [
+  {
+    id: "pill" as const,
+    name: "Bo tròn (Pill)",
+    desc: "Bám sát dòng chữ",
+    roundedClass: "rounded-full",
+  },
+  {
+    id: "rounded" as const,
+    name: "Bo góc nhẹ",
+    desc: "Khung chữ nhật bo góc mềm",
+    roundedClass: "rounded-xl",
+  },
+  {
+    id: "rectangle" as const,
+    name: "Chữ nhật vuông",
+    desc: "Khối sắc nét che kín",
+    roundedClass: "rounded-none",
+  },
+  {
+    id: "bar" as const,
+    name: "Dải ngang toàn khung",
+    desc: "Kéo dài suốt chân video",
+    roundedClass: "rounded-none",
+  },
+];
 
 const COLOR_PRESETS = [
   { name: "Trắng tinh (Chuẩn)", hex: "#FFFFFF" },
@@ -80,7 +133,7 @@ export function SubtitleConfigCard({
 }) {
   const cfg: Required<SubtitleConfig> = { ...DEFAULT_SUBTITLE_CONFIG, ...value };
   const [showColorModal, setShowColorModal] = useState(false);
-  const [colorTarget, setColorTarget] = useState<"color" | "color_border">("color");
+  const [colorTarget, setColorTarget] = useState<"color" | "color_border" | "color_shadow" | "color_mask">("color");
   const [tempColor, setTempColor] = useState(cfg.color);
   const [customFont, setCustomFont] = useState(
     FONT_OPTIONS.some((o) => o.value === cfg.font && o.value !== "__custom__") ? "" : cfg.font
@@ -120,17 +173,29 @@ export function SubtitleConfigCard({
     setCustomFont("");
   };
 
-  const openColorPicker = (target: "color" | "color_border") => {
+  const openColorPicker = (target: "color" | "color_border" | "color_shadow" | "color_mask") => {
     setColorTarget(target);
-    setTempColor(target === "color" ? cfg.color : cfg.color_border);
+    if (target === "color") {
+      setTempColor(cfg.color);
+    } else if (target === "color_border") {
+      setTempColor(cfg.color_border);
+    } else if (target === "color_shadow") {
+      setTempColor(cfg.color_shadow);
+    } else {
+      setTempColor(cfg.mask_color);
+    }
     setShowColorModal(true);
   };
 
   const applyColor = (colorHex: string) => {
     if (colorTarget === "color") {
       update("color", colorHex);
-    } else {
+    } else if (colorTarget === "color_border") {
       update("color_border", colorHex);
+    } else if (colorTarget === "color_shadow") {
+      update("color_shadow", colorHex);
+    } else {
+      update("mask_color", colorHex);
     }
     setShowColorModal(false);
   };
@@ -187,10 +252,90 @@ export function SubtitleConfigCard({
   const scaledMarginR = Math.max(0, cfg.margin_r);
   const outlinePx = Math.max(1, cfg.outline || 1.6);
 
+  const previewTextShadow = (() => {
+    const parts: string[] = [];
+    if (cfg.has_border) {
+      parts.push(
+        `-${outlinePx}px -${outlinePx}px 0 ${cfg.color_border}`,
+        `${outlinePx}px -${outlinePx}px 0 ${cfg.color_border}`,
+        `-${outlinePx}px  ${outlinePx}px 0 ${cfg.color_border}`,
+        `${outlinePx}px  ${outlinePx}px 0 ${cfg.color_border}`
+      );
+    }
+    if (cfg.has_shadow) {
+      parts.push(`0 1.5px 4px ${cfg.color_shadow || "#000000"}`);
+    }
+    return parts.length > 0 ? parts.join(", ") : "none";
+  })();
+
+  const modalBorderColor = colorTarget === "color_border" ? tempColor : cfg.color_border;
+  const modalShadowColor = colorTarget === "color_shadow" ? tempColor : (cfg.color_shadow || "#000000");
+
+  const modalTextShadow = (() => {
+    const parts: string[] = [];
+    if (cfg.has_border || colorTarget === "color_border") {
+      parts.push(
+        `-1.5px -1.5px 0 ${modalBorderColor}`,
+        ` 1.5px -1.5px 0 ${modalBorderColor}`,
+        `-1.5px  1.5px 0 ${modalBorderColor}`,
+        ` 1.5px  1.5px 0 ${modalBorderColor}`
+      );
+    }
+    if (cfg.has_shadow || colorTarget === "color_shadow") {
+      parts.push(`0 1.5px 4px ${modalShadowColor}`);
+    }
+    return parts.length > 0 ? parts.join(", ") : "none";
+  })();
+
+  const modalSubTextShadow = (() => {
+    const parts: string[] = [];
+    if (cfg.has_border || colorTarget === "color_border") {
+      parts.push(
+        `-1px -1px 0 ${modalBorderColor}`,
+        ` 1px -1px 0 ${modalBorderColor}`,
+        `-1px  1px 0 ${modalBorderColor}`,
+        ` 1px  1px 0 ${modalBorderColor}`
+      );
+    }
+    if (cfg.has_shadow || colorTarget === "color_shadow") {
+      parts.push(`0 1px 3px ${modalShadowColor}`);
+    }
+    return parts.length > 0 ? parts.join(", ") : "none";
+  })();
+
+  const getMaskShapeClasses = (shape: "pill" | "rounded" | "rectangle" | "bar") => {
+    switch (shape) {
+      case "pill":
+        return "inset-0 -inset-x-3.5 -inset-y-1.5 rounded-full";
+      case "rounded":
+        return "inset-0 -inset-x-3 -inset-y-1.5 rounded-xl";
+      case "rectangle":
+        return "inset-0 -inset-x-3 -inset-y-1 rounded-none";
+      case "bar":
+        return "-inset-y-1 -left-[1000px] -right-[1000px] rounded-none";
+      default:
+        return "inset-0 -inset-x-3.5 -inset-y-1.5 rounded-full";
+    }
+  };
+
+  const maskBlurPx = cfg.mask_blur ?? 12;
+  const maskBgColor = hexToRgba(cfg.mask_color || "#000000", (cfg.mask_opacity ?? 40) / 100);
+  const maskBoxShadow =
+    maskBlurPx > 0
+      ? `0 2px ${Math.max(4, maskBlurPx)}px ${hexToRgba(
+          cfg.mask_color || "#000000",
+          ((cfg.mask_opacity ?? 40) / 100) * 0.75
+        )}`
+      : "none";
+
+  const activeModalMaskColor = colorTarget === "color_mask" ? tempColor : (cfg.mask_color || "#000000");
+  const modalMaskBgColor = hexToRgba(activeModalMaskColor, (cfg.mask_opacity ?? 40) / 100);
+  const showModalMask = cfg.mask_enabled || colorTarget === "color_mask";
+
   return (
     <Card
       title="4. Cấu hình phụ đề"
-      description="Tuỳ chỉnh giao diện phụ đề: phông chữ, màu chữ, màu viền, kích thước, căn lề và xem trước trực tiếp trên khung hình video bên dưới."
+      description="Tuỳ chỉnh giao diện phụ đề: phông chữ, màu chữ, viền, đổ bóng, làm mờ phụ đề cũ, kích thước, căn lề và xem trước trực tiếp trên khung hình video bên dưới."
       actions={
         <Button
           type="button"
@@ -207,10 +352,10 @@ export function SubtitleConfigCard({
       <div className="flex flex-col gap-6">
         {/* --- Top Section: Controls Grid --- */}
         <div className="flex flex-col gap-5">
-          {/* Row 1: Font Picker & Color Pickers (Text Color + Border Color) */}
+          {/* Row 1: Font Picker & Main Text Color */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-            {/* Font Picker (6 cols) */}
-            <div className="lg:col-span-6">
+            {/* Font Picker (7 cols) */}
+            <div className="lg:col-span-7">
               <Field
                 label="Phông chữ phụ đề"
                 helper="Hỗ trợ chuẩn Phetsarath OT (tiếng Lào), Kantumruy Pro (Khmer), Noto Sans và các phông tuỳ chọn."
@@ -257,8 +402,8 @@ export function SubtitleConfigCard({
               </Field>
             </div>
 
-            {/* Màu chữ (3 cols) */}
-            <div className="flex flex-col gap-1.5 lg:col-span-3">
+            {/* Màu chữ (5 cols) */}
+            <div className="flex flex-col gap-1.5 lg:col-span-5">
               <label className="text-sm font-semibold text-foreground">Màu chữ phụ đề</label>
               <button
                 type="button"
@@ -275,26 +420,6 @@ export function SubtitleConfigCard({
                 <Palette className="size-4 text-primary group-hover:scale-110 transition-transform" aria-hidden />
               </button>
               <p className="text-xs text-muted-foreground">Màu thân chữ chính</p>
-            </div>
-
-            {/* Màu viền chữ (3 cols) */}
-            <div className="flex flex-col gap-1.5 lg:col-span-3">
-              <label className="text-sm font-semibold text-foreground">Màu viền chữ</label>
-              <button
-                type="button"
-                onClick={() => openColorPicker("color_border")}
-                className="group flex min-h-11 items-center justify-between gap-2.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium transition-all hover:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-              >
-                <div className="flex items-center gap-2">
-                  <span
-                    className="size-5 shrink-0 rounded-md border border-slate-400/60 shadow-inner"
-                    style={{ backgroundColor: cfg.color_border }}
-                  />
-                  <span className="font-mono text-xs font-bold text-foreground">{cfg.color_border}</span>
-                </div>
-                <Palette className="size-4 text-primary group-hover:scale-110 transition-transform" aria-hidden />
-              </button>
-              <p className="text-xs text-muted-foreground">Viền bo chống lẫn nền</p>
             </div>
           </div>
 
@@ -411,7 +536,392 @@ export function SubtitleConfigCard({
             </div>
           </div>
 
-          {/* Row 3: Margins (Căn lề dọc nâng cao với mốc nhanh + Căn lề ngang) */}
+          {/* Row 3: Hiệu ứng viền chữ & đổ bóng */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {/* Box 1: Cấu hình Viền chữ */}
+            <div
+              className={`flex flex-col justify-between gap-3 rounded-xl border p-4 transition-all ${
+                cfg.has_border ? "border-primary/30 bg-primary/5" : "border-slate-200 bg-slate-50/60"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={cfg.has_border}
+                    onChange={(e) => update("has_border", e.target.checked)}
+                    className="size-4.5 rounded border-slate-300 text-primary accent-primary focus:ring-2 focus:ring-primary/20 cursor-pointer"
+                  />
+                  <span className="text-sm font-semibold text-foreground">Viền chữ</span>
+                </label>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                    cfg.has_border
+                      ? "bg-primary/10 text-primary-strong"
+                      : "bg-slate-200/70 text-slate-500"
+                  }`}
+                >
+                  {cfg.has_border ? "Đang bật" : "Đang tắt"}
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-foreground">Màu viền chữ</label>
+                  {cfg.has_border && (
+                    <span className="font-mono text-[11px] font-bold text-muted-foreground">{cfg.color_border}</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!cfg.has_border) update("has_border", true);
+                    openColorPicker("color_border");
+                  }}
+                  className={`group flex min-h-11 items-center justify-between gap-2.5 rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
+                    cfg.has_border
+                      ? "border-slate-300 bg-white hover:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                      : "border-slate-200 bg-slate-100/70 text-slate-400 hover:border-slate-300"
+                  }`}
+                  title={cfg.has_border ? "Nhấp để đổi màu viền chữ" : "Nhấp để bật và chọn màu viền chữ"}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`size-5 shrink-0 rounded-md border shadow-inner ${
+                        cfg.has_border ? "border-slate-400/60" : "border-slate-300 opacity-40"
+                      }`}
+                      style={{ backgroundColor: cfg.color_border }}
+                    />
+                    <span className={`font-mono text-xs font-bold ${cfg.has_border ? "text-foreground" : "text-slate-400"}`}>
+                      {cfg.has_border ? cfg.color_border : "Không có viền (Bấm để bật)"}
+                    </span>
+                  </div>
+                  <Palette className={`size-4 ${cfg.has_border ? "text-primary group-hover:scale-110" : "text-slate-400"} transition-transform`} aria-hidden />
+                </button>
+                <p className="text-xs text-muted-foreground">Viền bo chống lẫn nền video</p>
+              </div>
+            </div>
+
+            {/* Box 2: Cấu hình Đổ bóng chữ */}
+            <div
+              className={`flex flex-col justify-between gap-3 rounded-xl border p-4 transition-all ${
+                cfg.has_shadow ? "border-primary/30 bg-primary/5" : "border-slate-200 bg-slate-50/60"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={cfg.has_shadow}
+                    onChange={(e) => update("has_shadow", e.target.checked)}
+                    className="size-4.5 rounded border-slate-300 text-primary accent-primary focus:ring-2 focus:ring-primary/20 cursor-pointer"
+                  />
+                  <span className="text-sm font-semibold text-foreground">Đổ bóng chữ</span>
+                </label>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                    cfg.has_shadow
+                      ? "bg-primary/10 text-primary-strong"
+                      : "bg-slate-200/70 text-slate-500"
+                  }`}
+                >
+                  {cfg.has_shadow ? "Đang bật" : "Đang tắt"}
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-foreground">Màu đổ bóng</label>
+                  {cfg.has_shadow && (
+                    <span className="font-mono text-[11px] font-bold text-muted-foreground">{cfg.color_shadow}</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!cfg.has_shadow) update("has_shadow", true);
+                    openColorPicker("color_shadow");
+                  }}
+                  className={`group flex min-h-11 items-center justify-between gap-2.5 rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
+                    cfg.has_shadow
+                      ? "border-slate-300 bg-white hover:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                      : "border-slate-200 bg-slate-100/70 text-slate-400 hover:border-slate-300"
+                  }`}
+                  title={cfg.has_shadow ? "Nhấp để đổi màu đổ bóng chữ" : "Nhấp để bật và chọn màu đổ bóng"}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`size-5 shrink-0 rounded-md border shadow-inner ${
+                        cfg.has_shadow ? "border-slate-400/60" : "border-slate-300 opacity-40"
+                      }`}
+                      style={{ backgroundColor: cfg.color_shadow }}
+                    />
+                    <span className={`font-mono text-xs font-bold ${cfg.has_shadow ? "text-foreground" : "text-slate-400"}`}>
+                      {cfg.has_shadow ? cfg.color_shadow : "Không đổ bóng (Bấm để bật)"}
+                    </span>
+                  </div>
+                  <Palette className={`size-4 ${cfg.has_shadow ? "text-primary group-hover:scale-110" : "text-slate-400"} transition-transform`} aria-hidden />
+                </button>
+                <p className="text-xs text-muted-foreground">Bóng mờ tạo chiều sâu cho chữ</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 4: Làm mờ phụ đề cũ (Che phụ đề gốc trên video) */}
+          <div className="rounded-xl border border-border/90 bg-muted/30 p-4 transition-all sm:p-5">
+            {/* Header: Title, Description, and Toggle Checkbox */}
+            <div className="flex flex-col gap-3 pb-4 border-b border-border/70 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary mt-0.5">
+                  <EyeOff className="size-5" aria-hidden />
+                </div>
+                <div className="flex flex-col">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-foreground">
+                      Làm mờ phụ đề cũ (Che phụ đề gốc)
+                    </span>
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                        cfg.mask_enabled
+                          ? "bg-primary/10 text-primary-strong"
+                          : "bg-slate-200/70 text-slate-500"
+                      }`}
+                    >
+                      {cfg.mask_enabled ? "Đang bật" : "Đang tắt"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Tạo ô mờ phía sau phụ đề để che đi phụ đề gốc (tiếng Trung, tiếng Anh...) có sẵn trên video mà không cần chèn thanh đen thô cứng.
+                  </p>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer select-none shrink-0 self-start sm:self-center">
+                <input
+                  type="checkbox"
+                  checked={cfg.mask_enabled}
+                  onChange={(e) => update("mask_enabled", e.target.checked)}
+                  className="size-4.5 rounded border-slate-300 text-primary accent-primary focus:ring-2 focus:ring-primary/20 cursor-pointer"
+                />
+                <span className="text-sm font-semibold text-foreground">Bật làm mờ</span>
+              </label>
+            </div>
+
+            {/* Options grid (Color, Blur intensity & Opacity, Shape) */}
+            <div className={`mt-4 flex flex-col gap-5 transition-opacity ${cfg.mask_enabled ? "opacity-100" : "opacity-40 pointer-events-none"}`}>
+              {/* Top row: Chọn màu làm mờ & Mức độ mờ */}
+              <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+                {/* 1. Chọn màu làm mờ (4 cols) */}
+                <div className="flex flex-col gap-1.5 lg:col-span-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-foreground">Màu làm mờ</label>
+                    <span className="font-mono text-[11px] font-bold text-muted-foreground">{cfg.mask_color}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!cfg.mask_enabled) update("mask_enabled", true);
+                      openColorPicker("color_mask");
+                    }}
+                    className="group flex min-h-11 items-center justify-between gap-2.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium transition-all hover:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                    title="Nhấp để chọn màu nền làm mờ"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="size-5 shrink-0 rounded-md border border-slate-400/60 shadow-inner"
+                        style={{ backgroundColor: cfg.mask_color }}
+                      />
+                      <span className="font-mono text-xs font-bold text-foreground">{cfg.mask_color}</span>
+                    </div>
+                    <Palette className="size-4 text-primary group-hover:scale-110 transition-transform" aria-hidden />
+                  </button>
+                  <p className="text-xs text-muted-foreground">Màu lớp nền che phụ đề cũ (mặc định đen tuyền)</p>
+                </div>
+
+                {/* 2. Mức độ mờ: Blur radius & Opacity (8 cols) */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:col-span-8">
+                  {/* Độ nhòe mờ (Blur Radius) */}
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <label htmlFor="mask-blur-slider" className="text-xs font-semibold text-foreground">
+                        Độ nhòe mờ (Blur)
+                      </label>
+                      <span className="rounded bg-primary/10 px-2 py-0.5 font-mono text-xs font-bold text-primary-strong">
+                        {cfg.mask_blur} px
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="mask-blur-slider"
+                        type="range"
+                        min="0"
+                        max="30"
+                        step="1"
+                        value={cfg.mask_blur}
+                        onChange={(e) => update("mask_blur", Number(e.target.value))}
+                        className="h-2 w-full cursor-pointer accent-primary"
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        max="30"
+                        value={cfg.mask_blur}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value, 10);
+                          if (!isNaN(v)) update("mask_blur", Math.max(0, Math.min(30, v)));
+                        }}
+                        className="w-14 rounded-lg border border-slate-300 px-1.5 py-1 text-center font-mono text-xs font-bold text-foreground"
+                      />
+                    </div>
+                    <div className="flex justify-between text-[11px] text-muted-foreground pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => update("mask_blur", 0)}
+                        className={`hover:text-primary ${cfg.mask_blur === 0 ? "font-bold text-primary underline" : ""}`}
+                      >
+                        Tắt (0)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => update("mask_blur", 6)}
+                        className={`hover:text-primary ${cfg.mask_blur === 6 ? "font-bold text-primary underline" : ""}`}
+                      >
+                        Nhẹ (6)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => update("mask_blur", 12)}
+                        className={`hover:text-primary ${cfg.mask_blur === 12 ? "font-bold text-primary underline" : ""}`}
+                      >
+                        Chuẩn (12)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => update("mask_blur", 20)}
+                        className={`hover:text-primary ${cfg.mask_blur === 20 ? "font-bold text-primary underline" : ""}`}
+                      >
+                        Mạnh (20)
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Độ đậm nền (Opacity) */}
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <label htmlFor="mask-opacity-slider" className="text-xs font-semibold text-foreground">
+                        Độ đậm nền (Opacity)
+                      </label>
+                      <span className="rounded bg-primary/10 px-2 py-0.5 font-mono text-xs font-bold text-primary-strong">
+                        {cfg.mask_opacity} %
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="mask-opacity-slider"
+                        type="range"
+                        min="10"
+                        max="100"
+                        step="5"
+                        value={cfg.mask_opacity}
+                        onChange={(e) => update("mask_opacity", Number(e.target.value))}
+                        className="h-2 w-full cursor-pointer accent-primary"
+                      />
+                      <input
+                        type="number"
+                        min="10"
+                        max="100"
+                        step="5"
+                        value={cfg.mask_opacity}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value, 10);
+                          if (!isNaN(v)) update("mask_opacity", Math.max(10, Math.min(100, v)));
+                        }}
+                        className="w-14 rounded-lg border border-slate-300 px-1.5 py-1 text-center font-mono text-xs font-bold text-foreground"
+                      />
+                    </div>
+                    <div className="flex justify-between text-[11px] text-muted-foreground pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => update("mask_opacity", 25)}
+                        className={`hover:text-primary ${cfg.mask_opacity === 25 ? "font-bold text-primary underline" : ""}`}
+                      >
+                        Mờ (25%)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => update("mask_opacity", 40)}
+                        className={`hover:text-primary ${cfg.mask_opacity === 40 ? "font-bold text-primary underline" : ""}`}
+                      >
+                        Chuẩn (40%)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => update("mask_opacity", 70)}
+                        className={`hover:text-primary ${cfg.mask_opacity === 70 ? "font-bold text-primary underline" : ""}`}
+                      >
+                        Đậm (70%)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => update("mask_opacity", 100)}
+                        className={`hover:text-primary ${cfg.mask_opacity === 100 ? "font-bold text-primary underline" : ""}`}
+                      >
+                        Kín (100%)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. Hình dạng làm mờ (ô chữ) */}
+              <div className="flex flex-col gap-2 pt-2 border-t border-border/60">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-foreground">
+                    Hình dạng làm mờ (ô chữ)
+                  </label>
+                  <span className="text-[11px] text-muted-foreground">
+                    Chọn kiểu dáng khung che chữ phía sau
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                  {MASK_SHAPE_OPTIONS.map((shape) => {
+                    const isSelected = (cfg.mask_shape || "pill") === shape.id;
+                    return (
+                      <button
+                        key={shape.id}
+                        type="button"
+                        onClick={() => update("mask_shape", shape.id)}
+                        className={`group flex flex-col items-center justify-center gap-2 rounded-xl border-2 p-3 text-center transition-all ${
+                          isSelected
+                            ? "border-primary bg-primary/10 text-primary-strong ring-2 ring-primary/20 shadow-xs"
+                            : "border-slate-300 bg-white text-muted-foreground hover:border-slate-400 hover:text-foreground"
+                        }`}
+                      >
+                        <div className="flex h-7 items-center justify-center w-full">
+                          <span
+                            className={`h-4 border border-slate-400/80 bg-slate-700/60 transition-all ${shape.roundedClass} ${
+                              shape.id === "bar" ? "w-16" : shape.id === "pill" ? "w-12" : "w-11"
+                            } ${isSelected ? "border-primary bg-primary/40" : ""}`}
+                          />
+                        </div>
+                        <div className="flex flex-col">
+                          <span className={`text-xs font-bold ${isSelected ? "text-primary-strong" : "text-foreground"}`}>
+                            {shape.name}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground line-clamp-1">
+                            {shape.desc}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 5: Margins (Căn lề dọc nâng cao với mốc nhanh + Căn lề ngang) */}
           <div className="rounded-xl border border-border/80 bg-muted/40 p-4">
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
@@ -635,17 +1145,19 @@ export function SubtitleConfigCard({
                       }`}
                     title="Bấm và giữ chuột để kéo phụ đề lên/xuống căn chỉnh vị trí trực tiếp"
                   >
-                    {/* Layer 0: Backdrop Blur Pill (Frosted translucent backdrop) */}
-                    <span
-                      aria-hidden
-                      className="absolute inset-0 -inset-x-3 -inset-y-1.5 rounded-full pointer-events-none"
-                      style={{
-                        backgroundColor: "rgba(0, 0, 0, 0.25)",
-                        backdropFilter: "blur(12px)",
-                        WebkitBackdropFilter: "blur(12px)",
-                        boxShadow: "0 2px 10px rgba(0, 0, 0, 0.25)",
-                      }}
-                    />
+                    {/* Layer 0: Backdrop Blur (Làm mờ phụ đề cũ) */}
+                    {cfg.mask_enabled && (
+                      <span
+                        aria-hidden
+                        className={`absolute pointer-events-none transition-all ${getMaskShapeClasses(cfg.mask_shape || "pill")}`}
+                        style={{
+                          backgroundColor: maskBgColor,
+                          backdropFilter: maskBlurPx > 0 ? `blur(${maskBlurPx}px)` : "none",
+                          WebkitBackdropFilter: maskBlurPx > 0 ? `blur(${maskBlurPx}px)` : "none",
+                          boxShadow: maskBoxShadow,
+                        }}
+                      />
+                    )}
 
                     {/* Drag indicator hint on hover/drag */}
                     <span
@@ -665,13 +1177,7 @@ export function SubtitleConfigCard({
                         color: cfg.color,
                         fontWeight: cfg.bold ? 700 : 400,
                         fontStyle: cfg.italic ? "italic" : "normal",
-                        textShadow: `
-                          -${outlinePx}px -${outlinePx}px 0 ${cfg.color_border},
-                           ${outlinePx}px -${outlinePx}px 0 ${cfg.color_border},
-                          -${outlinePx}px  ${outlinePx}px 0 ${cfg.color_border},
-                           ${outlinePx}px  ${outlinePx}px 0 ${cfg.color_border},
-                           0 1.5px 4px rgba(0, 0, 0, 0.95)
-                        `,
+                        textShadow: previewTextShadow,
                       }}
                     >
                       {currentSample}
@@ -733,12 +1239,22 @@ export function SubtitleConfigCard({
                 </div>
                 <div>
                   <h3 className="text-base font-semibold text-foreground">
-                    {colorTarget === "color" ? "Chọn màu chữ phụ đề" : "Chọn màu viền chữ phụ đề"}
+                    {colorTarget === "color"
+                      ? "Chọn màu chữ phụ đề"
+                      : colorTarget === "color_border"
+                      ? "Chọn màu viền chữ phụ đề"
+                      : colorTarget === "color_shadow"
+                      ? "Chọn màu đổ bóng phụ đề"
+                      : "Chọn màu làm mờ phụ đề cũ"}
                   </h3>
                   <p className="text-xs text-muted-foreground">
                     {colorTarget === "color"
                       ? "Chọn màu thân chữ từ bảng hoặc nhập mã HEX."
-                      : "Chọn màu viền bao quanh chữ để tăng tương phản trên nền video."}
+                      : colorTarget === "color_border"
+                      ? "Chọn màu viền bao quanh chữ để tăng tương phản trên nền video."
+                      : colorTarget === "color_shadow"
+                      ? "Chọn màu bóng mờ phía sau chữ để tạo chiều sâu và nổi bật trên nền video."
+                      : "Chọn màu nền làm mờ để che phụ đề gốc có sẵn trên video."}
                   </p>
                 </div>
               </div>
@@ -830,21 +1346,23 @@ export function SubtitleConfigCard({
 
                   {/* Backdrop Blur Pill & Sample Text */}
                   <div className="relative z-10 inline-block px-3 py-1.5 my-auto">
-                    <span
-                      aria-hidden
-                      className="absolute inset-0 -inset-x-2 -inset-y-1 rounded-full bg-black/30 backdrop-blur-md shadow-[0_2px_8px_rgba(0,0,0,0.3)]"
-                    />
+                    {showModalMask && (
+                      <span
+                        aria-hidden
+                        className={`absolute pointer-events-none transition-all ${getMaskShapeClasses(cfg.mask_shape || "pill")}`}
+                        style={{
+                          backgroundColor: modalMaskBgColor,
+                          backdropFilter: maskBlurPx > 0 ? `blur(${maskBlurPx}px)` : "none",
+                          WebkitBackdropFilter: maskBlurPx > 0 ? `blur(${maskBlurPx}px)` : "none",
+                          boxShadow: maskBoxShadow,
+                        }}
+                      />
+                    )}
                     <span
                       className="relative z-10 block text-lg font-bold leading-tight"
                       style={{
                         color: colorTarget === "color" ? tempColor : cfg.color,
-                        textShadow: `
-                          -1.5px -1.5px 0 ${colorTarget === "color_border" ? tempColor : cfg.color_border},
-                           1.5px -1.5px 0 ${colorTarget === "color_border" ? tempColor : cfg.color_border},
-                          -1.5px  1.5px 0 ${colorTarget === "color_border" ? tempColor : cfg.color_border},
-                           1.5px  1.5px 0 ${colorTarget === "color_border" ? tempColor : cfg.color_border},
-                           0 1.5px 3px rgba(0,0,0,0.9)
-                        `,
+                        textShadow: modalTextShadow,
                       }}
                     >
                       Phụ đề mẫu
@@ -853,12 +1371,7 @@ export function SubtitleConfigCard({
                       className="relative z-10 block text-xs font-bold mt-1"
                       style={{
                         color: colorTarget === "color" ? tempColor : cfg.color,
-                        textShadow: `
-                          -1px -1px 0 ${colorTarget === "color_border" ? tempColor : cfg.color_border},
-                           1px -1px 0 ${colorTarget === "color_border" ? tempColor : cfg.color_border},
-                          -1px  1px 0 ${colorTarget === "color_border" ? tempColor : cfg.color_border},
-                           1px  1px 0 ${colorTarget === "color_border" ? tempColor : cfg.color_border}
-                        `,
+                        textShadow: modalSubTextShadow,
                       }}
                     >
                       ឥឡូវព្រះអធិរាជ

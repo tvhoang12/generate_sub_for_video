@@ -58,6 +58,7 @@ class Job(SQLModel, table=True):
     provider: str | None = None
     # {"source_language", "dropped": [...], "warnings": [...], "outputs": [...], "suggested_terms": [...]}
     report: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    subtitle_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
     finished_at: datetime | None = None
 

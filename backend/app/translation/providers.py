@@ -28,50 +28,161 @@ class LLMProvider(Protocol):
     def complete_batch(self, system: str, user: str) -> list[BatchItem]: ...
 
 
+def _is_rate_limit_error(e_or_text: Any) -> bool:
+    s = str(e_or_text).lower()
+    if (
+        "429" in s
+        or "resource_exhausted" in s
+        or "quota" in s
+        or "rate limit" in s
+        or "rate_limit" in s
+        or "exceeded your current quota" in s
+    ):
+        return True
+    code = getattr(e_or_text, "code", None)
+    if code == 429:
+        return True
+    status = getattr(e_or_text, "status", None)
+    if status and "RESOURCE_EXHAUSTED" in str(status).upper():
+        return True
+    return False
+
+
+def _is_transient_error(e: Any) -> bool:
+    s = str(e).lower()
+    return "503" in s or "unavailable" in s or "500" in s or "internal" in s or "timeout" in s or "connection" in s
+
+
 class GeminiProvider:
     name = "gemini"
+
+    _shared_key_idx: int = 0
+    _shared_model_idx: int = 0
 
     def __init__(self, model: str | None = None) -> None:
         import os
         from google import genai
 
-        api_key = settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
-        if not api_key:
+        primary_key = (
+            settings.gemini_api_key if isinstance(getattr(settings, "gemini_api_key", None), str) else ""
+        ) or os.getenv("GEMINI_API_KEY", "")
+        if not primary_key:
             raise ProviderError("Chưa cấu hình GEMINI_API_KEY. Vui lòng thêm GEMINI_API_KEY vào file .env")
-        self._client = genai.Client(api_key=api_key)
-        self._model = model or settings.gemini_model
+
+        backup_key = (
+            (settings.gemini_backup_api_key if isinstance(getattr(settings, "gemini_backup_api_key", None), str) else "")
+            or os.getenv("GEMINI_BACKUP_API_KEY", "AQ.Ab8RN6Jyje8P9LoUt0_GAIMigRIOfOXddkP6WO9-1bi1ofISgQ")
+        )
+
+        keys: list[str] = [primary_key]
+        if backup_key and backup_key.strip() and backup_key.strip() not in keys:
+            keys.append(backup_key.strip())
+
+        self._keys = keys
+        self._current_key_idx = min(GeminiProvider._shared_key_idx, len(keys) - 1)
+        self._client = genai.Client(api_key=self._keys[self._current_key_idx])
+
+        base_model = model or getattr(settings, "gemini_model", None) or "gemini-3.1-flash-lite"
+        raw_fallbacks = getattr(settings, "gemini_fallback_models", "gemini-3.5-flash-lite,gemini-3.6-flash")
+        if isinstance(raw_fallbacks, str):
+            fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip()]
+        else:
+            fallback_models = ["gemini-3.5-flash-lite", "gemini-3.6-flash"]
+
+        models: list[str] = [base_model]
+        for m in fallback_models:
+            if m not in models:
+                models.append(m)
+
+        self._models = models
+        self._current_model_idx = min(GeminiProvider._shared_model_idx, len(models) - 1)
+        self._model = self._models[self._current_model_idx]
 
     def _generate_with_retry(self, **kwargs) -> Any:
+        import logging
         import time
-        max_retries = 5
-        delay = 2.0
-        current_kwargs = dict(kwargs)
-        original_model = current_kwargs.get("model", self._model)
-        for attempt in range(1, max_retries + 1):
-            try:
-                return self._client.models.generate_content(**current_kwargs)
-            except Exception as e:
-                err_str = str(e).lower()
-                is_transient = "503" in err_str or "unavailable" in err_str or "429" in err_str or "resource_exhausted" in err_str
-                if is_transient and attempt < max_retries:
-                    import logging
-                    log_fn = logging.getLogger("substudio.providers").warning
-                    if attempt >= 3 and "flash" in original_model:
-                        fallback_model = "gemini-flash-lite-latest" if "3.1" in original_model else "gemini-3.1-flash-lite"
-                        current_kwargs["model"] = fallback_model
-                        log_fn(
-                            "Gemini API transient error (%s). Trying fallback model '%s' in %.1fs (attempt %d/%d)...",
-                            e, fallback_model, delay, attempt, max_retries
-                        )
-                    else:
-                        log_fn(
-                            "Gemini API transient error (%s), retrying in %.1fs (attempt %d/%d)...",
-                            e, delay, attempt, max_retries
-                        )
-                    time.sleep(delay)
-                    delay *= 2
+        from google import genai
+
+        log = logging.getLogger("substudio.providers")
+        total_keys = len(self._keys)
+        total_models = len(self._models)
+
+        while self._current_key_idx < total_keys:
+            current_key = self._keys[self._current_key_idx]
+            key_preview = f"{current_key[:10]}...{current_key[-4:]}" if len(current_key) > 14 else "***"
+
+            while self._current_model_idx < total_models:
+                current_model = self._models[self._current_model_idx]
+                call_kwargs = dict(kwargs)
+                call_kwargs["model"] = current_model
+
+                transient_retries = 2
+                for attempt in range(1, transient_retries + 1):
+                    try:
+                        resp = self._client.models.generate_content(**call_kwargs)
+                        raw_text = getattr(resp, "text", "") or ""
+                        if raw_text and _is_rate_limit_error(raw_text) and not (raw_text.startswith("{") or raw_text.startswith("[")):
+                            raise RuntimeError(f"Rate limit exceeded trong response text: {raw_text}")
+
+                        # Success: persist working state
+                        self._model = current_model
+                        GeminiProvider._shared_key_idx = self._current_key_idx
+                        GeminiProvider._shared_model_idx = self._current_model_idx
+                        return resp
+                    except Exception as e:
+                        if _is_rate_limit_error(e):
+                            log.warning(
+                                "Gemini Rate Limit (429/Quota) trên key [%s] với model '%s'. "
+                                "Đang xử lý chuyển đổi...",
+                                key_preview, current_model
+                            )
+                            break
+                        elif _is_transient_error(e) and attempt < transient_retries:
+                            delay = 2.0 * attempt
+                            log.warning(
+                                "Gemini transient error (%s) trên model '%s', thử lại sau %.1fs (lần %d/%d)...",
+                                e, current_model, delay, attempt, transient_retries
+                            )
+                            time.sleep(delay)
+                            continue
+                        else:
+                            raise
+
+                # Hit rate limit on current model: try next fallback model
+                if self._current_model_idx + 1 < total_models:
+                    self._current_model_idx += 1
+                    next_model = self._models[self._current_model_idx]
+                    log.warning(
+                        "Gặp lỗi rate limit: Tự động chuyển từ model '%s' sang model '%s' (API key: [%s])",
+                        current_model, next_model, key_preview
+                    )
                     continue
-                raise
+                else:
+                    log.warning(
+                        "API key hiện tại [%s] đã thử hết các model fallback (%s) và đều chạm rate limit.",
+                        key_preview, ", ".join(self._models)
+                    )
+                    break
+
+            # If all models on current key exhausted, switch to backup key
+            if self._current_key_idx + 1 < total_keys:
+                self._current_key_idx += 1
+                new_key = self._keys[self._current_key_idx]
+                new_key_preview = f"{new_key[:10]}...{new_key[-4:]}" if len(new_key) > 14 else "***"
+                self._client = genai.Client(api_key=new_key)
+                self._current_model_idx = 0
+                self._model = self._models[0]
+                GeminiProvider._shared_key_idx = self._current_key_idx
+                GeminiProvider._shared_model_idx = self._current_model_idx
+                log.warning(
+                    "Đổi sang API key dự phòng [%s], bắt đầu lại từ model '%s'...",
+                    new_key_preview, self._model
+                )
+                continue
+            else:
+                raise ProviderError(
+                    f"Tất cả {total_keys} API keys và {total_models} models Gemini đều bị vượt quá Rate Limit / Quota."
+                )
 
     def complete(self, system: str, user: str, schema: type[T]) -> T:
         from google.genai import types

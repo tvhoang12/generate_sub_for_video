@@ -24,6 +24,12 @@ class Settings:
 
     ffmpeg: str = field(default_factory=lambda: os.getenv("FFMPEG_BIN", "ffmpeg"))
     ffprobe: str = field(default_factory=lambda: os.getenv("FFPROBE_BIN", "ffprobe"))
+    ffmpeg_threads: int = field(
+        default_factory=lambda: int(os.getenv("FFMPEG_THREADS", str(min(os.cpu_count() or 4, 16))))
+    )
+    ffmpeg_filter_threads: int = field(
+        default_factory=lambda: int(os.getenv("FFMPEG_FILTER_THREADS", "4"))
+    )
     funasr_model: str = field(default_factory=lambda: os.getenv("FUNASR_MODEL", "iic/SenseVoiceSmall"))
     funasr_vad_model: str = field(default_factory=lambda: os.getenv("FUNASR_VAD_MODEL", "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"))
     funasr_punc_model: str = field(default_factory=lambda: os.getenv("FUNASR_PUNC_MODEL", ""))
@@ -34,7 +40,13 @@ class Settings:
     # "gemini" | "claude" | "openai" | "mock" (mock is for tests and local UI work only)
     translator: str = field(default_factory=lambda: os.getenv("TRANSLATOR_PROVIDER", "gemini").lower())
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    gemini_backup_api_key: str = field(
+        default_factory=lambda: os.getenv("GEMINI_BACKUP_API_KEY", "AQ.Ab8RN6Jyje8P9LoUt0_GAIMigRIOfOXddkP6WO9-1bi1ofISgQ")
+    )
     gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"))
+    gemini_fallback_models: str = field(
+        default_factory=lambda: os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.6-flash")
+    )
     claude_model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-5-5"))
     claude_effort: str = field(default_factory=lambda: os.getenv("CLAUDE_EFFORT", "medium"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
@@ -42,6 +54,7 @@ class Settings:
 
     max_cue_seconds: float = field(default_factory=lambda: float(os.getenv("MAX_CUE_SECONDS", "7")))
     video_crf: int = field(default_factory=lambda: int(os.getenv("VIDEO_CRF", "20")))
+    video_preset: str = field(default_factory=lambda: os.getenv("VIDEO_PRESET", "veryfast"))
 
     @property
     def db_path(self) -> Path:

@@ -49,8 +49,14 @@ def probe_duration(video: Path) -> float:
 
 def extract_audio(video: Path, wav: Path) -> None:
     """16 kHz mono PCM, the format FunASR expects."""
-    _run([settings.ffmpeg, "-v", "error", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
-          "-c:a", "pcm_s16le", str(wav)], timeout=600)
+    cmd = [settings.ffmpeg, "-v", "error", "-y"]
+    if settings.ffmpeg_threads > 0:
+        cmd.extend(["-threads", str(settings.ffmpeg_threads)])
+    cmd.extend([
+        "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
+        "-c:a", "pcm_s16le", str(wav)
+    ])
+    _run(cmd, timeout=600)
 
 
 def _ensure_models_dir() -> None:
@@ -264,6 +270,18 @@ def burn_subtitles(video: Path, ass: Path, out: Path, fonts_dir: Path | None = N
     vf = f"ass='{_filter_path(ass)}':shaping=complex"
     if fonts_dir:
         vf += f":fontsdir='{_filter_path(fonts_dir)}'"
-    _run([settings.ffmpeg, "-v", "error", "-y", "-i", str(video), "-vf", vf,
-          "-c:v", "libx264", "-preset", "medium", "-crf", str(settings.video_crf),
-          "-c:a", "copy", "-movflags", "+faststart", str(out)], timeout=7200)
+    cmd = [settings.ffmpeg, "-v", "error", "-y"]
+    if settings.ffmpeg_threads > 0:
+        cmd.extend(["-threads", str(settings.ffmpeg_threads)])
+    if settings.ffmpeg_filter_threads > 0:
+        cmd.extend(["-filter_threads", str(settings.ffmpeg_filter_threads)])
+    cmd.extend([
+        "-i", str(video), "-vf", vf,
+        "-c:v", "libx264", "-preset", settings.video_preset, "-crf", str(settings.video_crf),
+    ])
+    if settings.ffmpeg_threads > 0:
+        cmd.extend(["-threads", str(settings.ffmpeg_threads)])
+    cmd.extend([
+        "-c:a", "copy", "-movflags", "+faststart", str(out)
+    ])
+    _run(cmd, timeout=7200)

@@ -80,15 +80,58 @@ def to_ass(cues: list[Cue], font: str, config: dict | None = None) -> str:
     fontsize = int(cfg.get("font_size") or 25)
     color_hex = str(cfg.get("color") or "#FFFFFF")
     color_border_hex = str(cfg.get("color_border") or "#000000")
-    primary_colour = hex_to_ass_color(color_hex, alpha=0)
-    border_colour = hex_to_ass_color(color_border_hex, alpha=0)
+    color_shadow_hex = str(cfg.get("color_shadow") or "#000000")
+
+    has_border = cfg.get("has_border", True)
+    if isinstance(has_border, str):
+        has_border = has_border.lower() not in ("false", "0", "no")
+
+    has_shadow = cfg.get("has_shadow", True)
+    if isinstance(has_shadow, str):
+        has_shadow = has_shadow.lower() not in ("false", "0", "no")
+
     bold = 1 if cfg.get("bold", True) else 0
     italic = 1 if cfg.get("italic", False) else 0
     margin_l = int(cfg.get("margin_l") or 10)
     margin_r = int(cfg.get("margin_r") or 10)
     margin_v = int(cfg.get("margin_v") or 12)
-    outline = float(cfg.get("outline") or 1.6)
-    shadow = float(cfg.get("shadow") or 0.5)
+    outline = float(cfg.get("outline") or 1.6) if has_border else 0.0
+    shadow = float(cfg.get("shadow") or 0.5) if has_shadow else 0.0
+
+    mask_enabled = cfg.get("mask_enabled", True)
+    if isinstance(mask_enabled, str):
+        mask_enabled = mask_enabled.lower() not in ("false", "0", "no")
+
+    mask_color_hex = str(cfg.get("mask_color") or "#000000")
+    raw_opacity = float(cfg.get("mask_opacity") if cfg.get("mask_opacity") is not None else 40)
+    if raw_opacity > 1.0:
+        raw_opacity = raw_opacity / 100.0
+    mask_opacity = max(0.0, min(1.0, raw_opacity))
+    mask_alpha = int((1.0 - mask_opacity) * 255)
+    mask_ass_colour = hex_to_ass_color(mask_color_hex, alpha=mask_alpha)
+
+    mask_blur = int(cfg.get("mask_blur") if cfg.get("mask_blur") is not None else 10)
+    mask_shape = str(cfg.get("mask_shape") or "pill").lower()
+
+    if mask_shape in ("rectangle", "rect"):
+        backdrop_border_style = 3
+        backdrop_outline = 3
+        backdrop_margin_l = margin_l
+        backdrop_margin_r = margin_r
+    elif mask_shape == "bar":
+        backdrop_border_style = 3
+        backdrop_outline = 4
+        backdrop_margin_l = 0
+        backdrop_margin_r = 0
+    else:  # pill or rounded
+        backdrop_border_style = 1
+        backdrop_outline = 6
+        backdrop_margin_l = margin_l
+        backdrop_margin_r = margin_r
+
+    primary_colour = hex_to_ass_color(color_hex, alpha=0)
+    border_colour = hex_to_ass_color(color_border_hex, alpha=0)
+    shadow_colour = hex_to_ass_color(color_shadow_hex, alpha=0x80)
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -99,19 +142,21 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{fontsize},{primary_colour},&H000000FF,{border_colour},&H80000000,{bold},{italic},0,0,100,100,0,0,1,{outline},{shadow},2,{margin_l},{margin_r},{margin_v},1
-Style: Backdrop,{font_name},{fontsize},&HFF000000,&H000000FF,&H80000000,&H80FFFFFF,{bold},{italic},0,0,100,100,0,0,1,6,0,2,{margin_l},{margin_r},{margin_v},1
+Style: Default,{font_name},{fontsize},{primary_colour},&H000000FF,{border_colour},{shadow_colour},{bold},{italic},0,0,100,100,0,0,1,{outline},{shadow},2,{margin_l},{margin_r},{margin_v},1
+Style: Backdrop,{font_name},{fontsize},&HFF000000,&H000000FF,{mask_ass_colour},&H80FFFFFF,{bold},{italic},0,0,100,100,0,0,{backdrop_border_style},{backdrop_outline},0,2,{backdrop_margin_l},{backdrop_margin_r},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = []
+    blur_tag = f"{{\\blur{mask_blur}}}" if mask_blur > 0 else ""
     for c in cues:
         text = c.text.strip().replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
         start = _ass_time(c.start_ms)
         end = _ass_time(c.end_ms)
         # Layer 0: softly blurred dark backdrop to obscure old hardcoded subtitles
-        lines.append(f"Dialogue: 0,{start},{end},Backdrop,,0,0,0,,{{\\blur10}}{text}")
+        if mask_enabled:
+            lines.append(f"Dialogue: 0,{start},{end},Backdrop,,0,0,0,,{blur_tag}{text}")
         # Layer 1: sharp styled text with black border and subtle shadow
         lines.append(f"Dialogue: 1,{start},{end},Default,,0,0,0,,{text}")
     return header + "\n".join(lines) + "\n"

@@ -1,5 +1,6 @@
 """HTTP API and static web UI."""
 
+import json
 import logging
 import shutil
 import zipfile
@@ -176,6 +177,7 @@ def _api_routes():
         title: str = Form(""),
         film_id: int | None = Form(None),
         episode_notes: str = Form(""),
+        subtitle_config: str = Form("{}"),
     ):
         filename = Path(file.filename or "video.mp4").name
         if Path(filename).suffix.lower() not in VIDEO_EXTENSIONS:
@@ -186,8 +188,21 @@ def _api_routes():
         if film_id is not None:
             get_or_404(s, Film, film_id)
 
-        job = Job(title=title.strip() or Path(filename).stem, video_filename=filename, film_id=film_id,
-                  languages=list(dict.fromkeys(codes)), episode_notes=episode_notes)
+        parsed_config: dict = {}
+        if subtitle_config:
+            try:
+                parsed_config = json.loads(subtitle_config)
+            except Exception:
+                parsed_config = {}
+
+        job = Job(
+            title=title.strip() or Path(filename).stem,
+            video_filename=filename,
+            film_id=film_id,
+            languages=list(dict.fromkeys(codes)),
+            episode_notes=episode_notes,
+            subtitle_config=parsed_config,
+        )
         s.add(job)
         s.commit()
         s.refresh(job)
