@@ -47,6 +47,24 @@ def probe_duration(video: Path) -> float:
     return float(proc.stdout.strip() or 0)
 
 
+def probe_video_dimensions(video: Path) -> tuple[int, int]:
+    """Return (width, height) of the video, defaulting to (1920, 1080) on failure."""
+    try:
+        proc = _run(
+            [settings.ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(video)],
+            timeout=30,
+        )
+        parts = proc.stdout.strip().split("x")
+        if len(parts) >= 2:
+            w, h = int(parts[0]), int(parts[1])
+            if w > 0 and h > 0:
+                return w, h
+    except Exception as e:
+        log.warning("probe_video_dimensions thất bại với %s: %s", video, e)
+    return 1920, 1080
+
+
 def extract_audio(video: Path, wav: Path) -> None:
     """16 kHz mono PCM, the format FunASR expects."""
     cmd = [settings.ffmpeg, "-v", "error", "-y"]
@@ -83,7 +101,11 @@ def get_asr_model():
                 }
                 if settings.funasr_vad_model:
                     kwargs["vad_model"] = settings.funasr_vad_model
-                    kwargs["vad_kwargs"] = {"max_single_segment_time": 30000}
+                    kwargs["vad_kwargs"] = {
+                        "max_single_segment_time": settings.funasr_vad_max_segment_ms,
+                        "max_end_silence_time": settings.funasr_vad_max_silence_ms,
+                        "speech_noise_thres": settings.funasr_vad_speech_noise_thres,
+                    }
                 if settings.funasr_punc_model:
                     kwargs["punc_model"] = settings.funasr_punc_model
                 _asr_model = AutoModel(**kwargs)
@@ -105,6 +127,9 @@ def get_vad_model():
                     model=settings.funasr_vad_model,
                     device=settings.funasr_device,
                     disable_update=True,
+                    max_single_segment_time=settings.funasr_vad_max_segment_ms,
+                    max_end_silence_time=settings.funasr_vad_max_silence_ms,
+                    speech_noise_thres=settings.funasr_vad_speech_noise_thres,
                 )
     return _vad_model
 
@@ -139,61 +164,123 @@ def _clean_rich_text(text: str) -> str:
     return cleaned.strip()
 
 
-def split_segment_cues(start_ms: int, end_ms: int, text: str, max_dur_ms: int = 7000) -> list[tuple[int, int, str]]:
-    """Split a long segment into natural sentence-level subtitle cues."""
-    dur = end_ms - start_ms
-    if dur <= max_dur_ms:
-        return [(start_ms, end_ms, text)]
+def split_segment_cues(
+    start_ms: int,
+    end_ms: int,
+    text: str,
+    max_dur_ms: int = 4000,
+    speech_regions: list[tuple[int, int]] | None = None,
+) -> list[tuple[int, int, str]]:
+    """Split a long segment into natural cadence-level subtitle cues.
 
-    # Split on sentence terminators: ? ! . ; and Chinese equivalents ？ ！ 。 ； \n
-    parts = re.split(r"([。？！?!；;\n]+)", text)
-    sentences = []
+    Splits by speaker pauses, sentence terminators (。？！?!；;\n), and clause
+    delimiters (，,、…) when the segment duration exceeds max_dur_ms or when
+    internal silence gaps / pauses are detected.
+    """
+    dur = end_ms - start_ms
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+
+    # Filter speech regions that overlap with this segment
+    inside_speech: list[tuple[int, int]] = []
+    if speech_regions:
+        inside_speech = [
+            (max(start_ms, s), min(end_ms, e))
+            for s, e in speech_regions
+            if s < end_ms and e > start_ms and min(end_ms, e) > max(start_ms, s)
+        ]
+
+    # Split text into candidate phrases/clauses
+    # Step A: Sentence terminators: 。？！?!；;\n
+    parts = re.split(r"([。？！?!；;\n]+)", cleaned)
+    sents: list[str] = []
     for i in range(0, len(parts), 2):
         s = parts[i]
         delim = parts[i + 1] if i + 1 < len(parts) else ""
         t = (s + delim).strip()
         if t:
-            sentences.append(t)
+            sents.append(t)
 
-    if len(sentences) <= 1:
-        # If no sentence punctuation and text is very long, try splitting on commas
-        if dur > max_dur_ms * 1.5:
-            parts = re.split(r"([，,]+)", text)
-            sentences = []
-            for i in range(0, len(parts), 2):
-                s = parts[i]
-                delim = parts[i + 1] if i + 1 < len(parts) else ""
-                t = (s + delim).strip()
-                if t:
-                    sentences.append(t)
+    # Step B: If long or containing internal pauses, further break on commas/pauses
+    phrases: list[str] = []
+    for s in (sents or [cleaned]):
+        comma_parts = re.split(r"([，,、…]+)", s)
+        if len(comma_parts) > 2 and (dur > max_dur_ms or len(s) > 14 or len(inside_speech) > 1):
+            for j in range(0, len(comma_parts), 2):
+                cp = comma_parts[j]
+                cp_delim = comma_parts[j + 1] if j + 1 < len(comma_parts) else ""
+                sub_clause = (cp + cp_delim).strip()
+                if sub_clause:
+                    phrases.append(sub_clause)
+        else:
+            phrases.append(s)
 
-    if len(sentences) <= 1:
-        return [(start_ms, end_ms, text)]
+    # If only 1 phrase
+    if len(phrases) <= 1:
+        if dur <= max_dur_ms:
+            return [(start_ms, end_ms, cleaned)]
+        # Long phrase without punctuation: split by space (Western languages) if available
+        words = cleaned.split(" ")
+        if len(words) >= 4 and dur > max_dur_ms:
+            mid = len(words) // 2
+            phrases = [" ".join(words[:mid]), " ".join(words[mid:])]
+        else:
+            return [(start_ms, end_ms, cleaned)]
 
-    total_chars = max(sum(len(s) for s in sentences), 1)
-    result: list[tuple[int, int, str]] = []
+    # Guard against over-splitting into sub-second blips if overall duration is too short
+    if dur < 1600 and len(phrases) > 1:
+        return [(start_ms, end_ms, cleaned)]
+
+    # Case A: If inside_speech count matches phrases count exactly and > 1, align 1:1!
+    if len(inside_speech) == len(phrases) and len(inside_speech) > 1:
+        result: list[tuple[int, int, str]] = []
+        for i, p in enumerate(phrases):
+            s_st, s_en = inside_speech[i]
+            if s_en - s_st < 800:
+                s_en = min(end_ms, s_st + 800)
+            result.append((s_st, s_en, p))
+        return result
+
+    # Case B: Proportional split with silence-boundary anchoring
+    total_chars = max(sum(len(p) for p in phrases), 1)
+    result = []
     curr_start = start_ms
-    for i, s in enumerate(sentences):
-        if i == len(sentences) - 1:
+    for i, p in enumerate(phrases):
+        if i == len(phrases) - 1:
             curr_end = end_ms
         else:
-            fraction = len(s) / total_chars
+            fraction = len(p) / total_chars
             curr_end = curr_start + int(dur * fraction)
+
+        # If speech regions exist, anchor curr_end to closest pause/end of speech region
+        if inside_speech and i < len(phrases) - 1:
+            for _, s_en in inside_speech:
+                if abs(s_en - curr_end) <= 800 and s_en > curr_start + 400:
+                    curr_end = s_en
+                    break
+
         if curr_end > curr_start:
-            result.append((curr_start, curr_end, s))
+            result.append((curr_start, curr_end, p))
         curr_start = curr_end
-    return result or [(start_ms, end_ms, text)]
+
+    return result or [(start_ms, end_ms, cleaned)]
 
 
-def transcribe(wav: Path, language: str, out_base: Path) -> tuple[str, list[Cue]]:
+def transcribe(
+    wav: Path,
+    language: str,
+    out_base: Path,
+    speech: list[tuple[int, int]] | None = None,
+) -> tuple[str, list[Cue]]:
     """Run FunASR (SenseVoiceSmall) with VAD to produce timestamped cues."""
     model = get_asr_model()
     gen_kwargs: dict[str, Any] = {
         "input": str(wav),
         "use_itn": True,
         "batch_size_s": 60,
-        "merge_vad": True,
-        "merge_length_s": 15,
+        "merge_vad": settings.funasr_merge_vad,
+        "merge_length_s": settings.funasr_merge_length_s,
         "sentence_timestamp": True,
     }
     # Language: SenseVoice supports "auto", "zh", "en", "yue", "ja", "ko"
@@ -235,14 +322,18 @@ def transcribe(wav: Path, language: str, out_base: Path) -> tuple[str, list[Cue]
             start_ms = int(seg.get("start", 0))
             end_ms = int(seg.get("end", 0))
             if end_ms > start_ms and clean_text:
-                for sub_start, sub_end, sub_text in split_segment_cues(start_ms, end_ms, clean_text, max_cue_ms):
+                for sub_start, sub_end, sub_text in split_segment_cues(
+                    start_ms, end_ms, clean_text, max_dur_ms=max_cue_ms, speech_regions=speech
+                ):
                     cues.append(Cue(len(cues) + 1, sub_start, sub_end, sub_text))
 
     if not cues and raw_full_text:
         clean_text = _clean_rich_text(raw_full_text)
         if clean_text and not is_non_speech(clean_text):
             duration_ms = int(probe_duration(wav) * 1000)
-            for sub_start, sub_end, sub_text in split_segment_cues(0, duration_ms, clean_text, max_cue_ms):
+            for sub_start, sub_end, sub_text in split_segment_cues(
+                0, duration_ms, clean_text, max_dur_ms=max_cue_ms, speech_regions=speech
+            ):
                 cues.append(Cue(len(cues) + 1, sub_start, sub_end, sub_text))
 
     # Save debug / report JSON for traceability
@@ -266,10 +357,18 @@ def _filter_path(path: Path) -> str:
 
 
 def burn_subtitles(video: Path, ass: Path, out: Path, fonts_dir: Path | None = None) -> None:
-    # Complex shaping is required for Khmer/Myanmar/Lao clusters; see subtitles.to_ass.
-    vf = f"ass='{_filter_path(ass)}':shaping=complex"
+    if fonts_dir is None:
+        candidate = Path(__file__).resolve().parents[2] / "assets" / "fonts"
+        if not candidate.exists():
+            candidate = Path(__file__).resolve().parents[2] / "app" / "fonts"
+        if candidate.exists():
+            fonts_dir = candidate
+    ass_path_escaped = _filter_path(ass)
     if fonts_dir:
-        vf += f":fontsdir='{_filter_path(fonts_dir)}'"
+        fonts_dir_escaped = _filter_path(fonts_dir)
+        vf = f"ass='{ass_path_escaped}':fontsdir='{fonts_dir_escaped}':shaping=complex"
+    else:
+        vf = f"ass='{ass_path_escaped}':shaping=complex"
     cmd = [settings.ffmpeg, "-v", "error", "-y"]
     if settings.ffmpeg_threads > 0:
         cmd.extend(["-threads", str(settings.ffmpeg_threads)])

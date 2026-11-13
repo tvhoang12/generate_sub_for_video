@@ -138,7 +138,9 @@ Tone and style: {film.style_notes or "(not provided)"}
 {json.dumps(glossary_rows, ensure_ascii=False, indent=1) if glossary_rows else "(empty)"}
 </glossary>
 
-Glossary entries are binding: spell a term exactly as listed, and when a translation exists for the target language, use it every time. Names the glossary lacks must still be rendered the same way throughout the episode."""
+Glossary entries are binding: spell a term exactly as listed, and when a translation exists for the target language, use it every time. Names the glossary lacks must still be rendered the same way throughout the episode.
+
+Cadence & Timing: Subtitle lines are segmented to match the speaker's cadence and breathing pauses. Input lines may be short clauses or sentence fragments. Translate each line faithfully to its corresponding ID so consecutive lines flow naturally together without merging or skipping."""
 
 
 def _lines_block(lines: list[dict]) -> str:
@@ -260,7 +262,8 @@ Episode notes from the editor: {self.episode_notes or "(none)"}
 {lang_rules_section}
 Translate every subtitle line below strictly and 100% into {lang.english_name} for viewers in that market:
 - Natural spoken {lang.english_name} that fits the characters and the scene, not word-for-word.
-- At most 2 lines per subtitle and about {lang.max_line_chars} characters per line; break with \\n at a natural phrase boundary.
+- Lines may be phrases or clauses split by speaker cadence; translate each line to match its specific slot while ensuring continuity.
+- At most 2 lines per subtitle (keep short dialogue on 1 single line; only break with \\n when exceeding about {lang.max_line_chars} characters or at a natural clause boundary). Never exceed 2 lines.
 - Keep pronouns and forms of address consistent with each character's gender, age and relationship.
 {homophone_rule}- Same ids as the input, one output line per input line.
 - Output ONLY the subtitle text in {lang.english_name}: absolutely no notes, no brackets, no romanisation, and no characters from other languages.
@@ -348,7 +351,8 @@ Summarise the key context in UNDER 150 WORDS strictly in technical English:
 <target code="{lang.code}">{lang.english_name}</target>
 Translate every subtitle line in <batch> strictly and 100% into natural {lang.english_name}:
 - Natural spoken phrasing suited to the characters and scene.
-- At most 2 lines per subtitle, about {lang.max_line_chars} characters per line; break with \\n at natural phrase boundaries.
+- Subtitle lines may be short clauses or phrases split by speaker pauses. Translate each line to match its specific slot while ensuring sentences connect naturally.
+- At most 2 lines per subtitle (keep short dialogue on 1 single line; only break with \\n when exceeding about {lang.max_line_chars} characters or at a natural clause boundary). Never exceed 2 lines.
 - Keep pronouns and forms of address consistent with <global_context>.
 {homophone_rule}- Output ONLY the translated subtitle text in {lang.english_name}: absolutely no notes, no brackets, no romanisation, and no foreign characters.
 - In 'fixed_src', provide the corrected source text (fixing any misheard homophone/near-homophone errors).

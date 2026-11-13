@@ -25,7 +25,7 @@ LANGUAGES: dict[str, Language] = {
     for lang in [
         Language("lo", "Tiếng Lào", "Lao", "Leelawadee UI", "Noto Sans Lao", re.compile(r"[຀-໿]"), 38),
         Language("my", "Tiếng Myanmar", "Burmese (Myanmar, Unicode — never Zawgyi)", "Myanmar Text", "Noto Sans Myanmar", re.compile(r"[က-႟]"), 38),
-        Language("km", "Tiếng Khmer (Campuchia)", "Khmer", "Leelawadee UI", "Noto Sans Khmer", re.compile(r"[ក-៿]"), 38),
+        Language("km", "Tiếng Khmer (Campuchia)", "Khmer", "Kantumruy Pro", "Kantumruy Pro", re.compile(r"[ក-៿]"), 38),
         Language("th", "Tiếng Thái", "Thai", "Leelawadee UI", "Noto Sans Thai", re.compile(r"[฀-๿]"), 38),
         Language("vi", "Tiếng Việt", "Vietnamese", "Arial", "Noto Sans", None, 42),
         Language("id", "Tiếng Indonesia", "Indonesian", "Arial", "Noto Sans", None, 42),

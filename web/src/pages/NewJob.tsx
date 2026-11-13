@@ -21,7 +21,28 @@ function loadLastLanguages(): string[] {
 function loadLastSubtitleConfig(): SubtitleConfig {
   try {
     const raw = localStorage.getItem(LAST_SUB_CONFIG_KEY);
-    return raw ? { ...DEFAULT_SUBTITLE_CONFIG, ...JSON.parse(raw) } : DEFAULT_SUBTITLE_CONFIG;
+    if (!raw) return DEFAULT_SUBTITLE_CONFIG;
+    const parsed = JSON.parse(raw);
+    // Migrate legacy 288p canvas values (<= 35) to standard ASS 1080p scale
+    if (parsed.font_size && parsed.font_size <= 35) {
+      parsed.font_size = 50;
+    }
+    if (parsed.margin_v && parsed.margin_v <= 25) {
+      parsed.margin_v = 50;
+    }
+    if (parsed.margin_l && parsed.margin_l <= 25) {
+      parsed.margin_l = 50;
+    }
+    if (parsed.margin_r && parsed.margin_r <= 25) {
+      parsed.margin_r = 50;
+    }
+    if (parsed.outline && parsed.outline < 2.0) {
+      parsed.outline = 3.0;
+    }
+    if (parsed.shadow && parsed.shadow < 1.0) {
+      parsed.shadow = 1.5;
+    }
+    return { ...DEFAULT_SUBTITLE_CONFIG, ...parsed };
   } catch {
     return DEFAULT_SUBTITLE_CONFIG;
   }
@@ -48,8 +69,11 @@ export function NewJobPage() {
     api.films().then(setFilms).catch(() => setFilms([]));
   }, []);
 
-  const pick = (f: File | undefined) => {
-    if (!f) return;
+  const pick = (f: File | undefined | null) => {
+    if (!f) {
+      setFile(null);
+      return;
+    }
     setFile(f);
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
     setError(null);
@@ -139,6 +163,15 @@ export function NewJobPage() {
               onChange={(e) => pick(e.target.files?.[0])} />
             {touched && problems.file && <p className="mt-2 text-sm text-destructive">{problems.file}</p>}
 
+            {file && (
+              <p className="mt-2.5 text-xs text-muted-foreground flex items-center gap-1.5">
+                <span className="size-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
+                <span>
+                  Video đã được tự động kết nối vào khung xem mẫu ở mục <strong>4. Tùy chỉnh phụ đề</strong> bên dưới để bạn căn chỉnh vị trí trực tiếp.
+                </span>
+              </p>
+            )}
+
             <div className="mt-5">
               <Field label="Tên hiển thị" helper="Dùng để đặt tên các file kết quả.">
                 {(p) => <input {...p} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="VD: The Mirror Between (Ep3)" />}
@@ -192,7 +225,13 @@ export function NewJobPage() {
           </Card>
 
           {/* 4. Subtitle Configuration Card */}
-          <SubtitleConfigCard value={subConfig} onChange={setSubConfig} />
+          <SubtitleConfigCard
+            value={subConfig}
+            onChange={setSubConfig}
+            videoFile={file}
+            onVideoFileChange={pick}
+            onPickVideo={() => inputRef.current?.click()}
+          />
 
           {/* 5. Tùy chọn xuất file */}
           <Card title="5. Tùy chọn xuất file" description="Tối ưu thời gian xử lý tùy theo nhu cầu sử dụng thực tế.">
@@ -261,7 +300,7 @@ export function NewJobPage() {
                     style={{ backgroundColor: subConfig.color_border || "#000000" }}
                     title={`Màu viền: ${subConfig.color_border || "#000000"}`}
                   />
-                  <span>{subConfig.font_size || 25}px</span>
+                  <span>{subConfig.font_size || 50}px</span>
                   {(subConfig.bold || subConfig.italic) && (
                     <span className="text-xs font-normal text-muted-foreground">
                       ({[subConfig.bold ? "Đậm" : "", subConfig.italic ? "Nghiêng" : ""].filter(Boolean).join(", ")})
@@ -271,7 +310,19 @@ export function NewJobPage() {
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted-foreground">Lề dọc</dt>
-                <dd className="text-right font-semibold">{subConfig.margin_v ?? 12}px</dd>
+                <dd className="text-right font-semibold">{subConfig.margin_v ?? 50}px</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">Cách dòng</dt>
+                <dd className="text-right font-semibold">{subConfig.line_spacing ?? 12}px</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">Làm mờ cũ</dt>
+                <dd className="text-right font-semibold">
+                  {subConfig.mask_enabled
+                    ? `${subConfig.mask_by_text ? "Bám sát text" : "Ô chữ cố định"} (${subConfig.mask_padding_x ?? 24}px)`
+                    : "Đang tắt"}
+                </dd>
               </div>
             </dl>
             {error && <div className="mt-4"><Alert tone="error" title="Không tải lên được">{error}</Alert></div>}

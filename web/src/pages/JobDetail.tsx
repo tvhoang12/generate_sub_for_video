@@ -206,7 +206,7 @@ export function JobDetailPage() {
             </div>
             <div className="grid gap-4 lg:grid-cols-[3fr_2fr]">
               {videoFor(selected) && (
-                <video key={selected} controls preload="metadata" className="aspect-video w-full rounded-lg bg-black"
+                <video key={selected} controls preload="metadata" className="w-full max-h-[520px] rounded-lg bg-black object-contain shadow-md"
                   src={`${api.fileUrl(job.id, videoFor(selected)!.file)}#t=1`} />
               )}
               <ol className="max-h-[420px] overflow-y-auto rounded-lg border border-border" aria-label="Danh sách phụ đề">

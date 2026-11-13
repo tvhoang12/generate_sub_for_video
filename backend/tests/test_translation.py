@@ -289,3 +289,119 @@ def test_clean_result_schema_with_homophone_corrections():
     assert corr.original == "雇总"
     assert corr.corrected == "顾总"
     assert corr.pinyin == "gù zǒng"
+
+
+def test_gemini_fallback_on_api_error_succeeds(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+    mock_settings = MagicMock(
+        gemini_api_key="test-api-key",
+        gemini_backup_api_key="",
+        gemini_model="model-broken",
+        gemini_fallback_models="model-working",
+    )
+
+    mock_client = MagicMock()
+    mock_success_response = MagicMock()
+    mock_success_response.candidates = [MagicMock(finish_reason="STOP")]
+    mock_success_response.parsed = DummySchema(id=99, text="Fallback thành công")
+
+    # Lần gọi đầu tiên (model-broken) gặp lỗi 503 UNAVAILABLE
+    # Lần gọi thứ hai (model-working) thành công
+    mock_client.models.generate_content.side_effect = [
+        Exception("503 UNAVAILABLE. Model currently experiencing high demand"),
+        mock_success_response,
+    ]
+
+    with patch("app.translation.providers.settings", mock_settings), patch("google.genai.Client", return_value=mock_client):
+        # Reset shared indices for isolation
+        GeminiProvider._shared_model_idx = 0
+        GeminiProvider._shared_key_idx = 0
+        provider = GeminiProvider()
+        assert provider._models == ["model-broken", "model-working"]
+
+        result = provider.complete("system instruction", "user prompt", DummySchema)
+        assert result.id == 99
+        assert result.text == "Fallback thành công"
+        assert provider._model == "model-working"
+
+
+def test_gemini_all_models_fail_raises_provider_error(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+    mock_settings = MagicMock(
+        gemini_api_key="test-api-key",
+        gemini_backup_api_key="",
+        gemini_model="model-1",
+        gemini_fallback_models="model-2",
+    )
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = Exception("404 Model Not Found")
+
+    with patch("app.translation.providers.settings", mock_settings), patch("google.genai.Client", return_value=mock_client):
+        GeminiProvider._shared_model_idx = 0
+        provider = GeminiProvider()
+        with pytest.raises(ProviderError, match="không gọi đc đến API AI|đều không thể hoàn thành"):
+            provider.complete("system", "user", DummySchema)
+
+
+def test_openai_fallback_on_api_error_succeeds(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    mock_settings = MagicMock(
+        openai_api_key="test-key",
+        openai_model="gpt-broken",
+        openai_fallback_models="gpt-working",
+    )
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.refusal = None
+    mock_choice.message.parsed = DummySchema(id=100, text="OpenAI Fallback OK")
+    mock_success_response = MagicMock(choices=[mock_choice])
+
+    # Lần gọi 1 fail (ví dụ 404 hoặc 503), lần 2 thành công
+    mock_client.chat.completions.parse.side_effect = [
+        Exception("503 Service Unavailable"),
+        mock_success_response,
+    ]
+
+    with patch("app.translation.providers.settings", mock_settings), patch("openai.OpenAI", return_value=mock_client):
+        OpenAIProvider._shared_model_idx = 0
+        provider = OpenAIProvider()
+        assert provider._models == ["gpt-broken", "gpt-working"]
+
+        result = provider.complete("system", "user", DummySchema)
+        assert result.id == 100
+        assert result.text == "OpenAI Fallback OK"
+        assert provider._model == "gpt-working"
+
+
+def test_claude_fallback_on_api_error_succeeds(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    mock_settings = MagicMock(
+        claude_model="claude-broken",
+        claude_fallback_models="claude-working",
+        claude_effort="medium",
+    )
+
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.stop_reason = "stop"
+    mock_resp.parsed_output = DummySchema(id=101, text="Claude Fallback OK")
+
+    mock_client.messages.parse.side_effect = [
+        Exception("529 Overloaded"),
+        mock_resp,
+    ]
+
+    from app.translation.providers import ClaudeProvider
+    with patch("app.translation.providers.settings", mock_settings), patch("anthropic.Anthropic", return_value=mock_client):
+        ClaudeProvider._shared_model_idx = 0
+        provider = ClaudeProvider()
+        assert provider._models == ["claude-broken", "claude-working"]
+
+        result = provider.complete("system", "user", DummySchema)
+        assert result.id == 101
+        assert result.text == "Claude Fallback OK"
+        assert provider._model == "claude-working"
+

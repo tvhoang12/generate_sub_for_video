@@ -15,4 +15,5 @@ services:
       - ./data:/data
       - ./models:/models
       - ./backend/app:/app/backend/app
+      - ./web/dist:/app/web/dist
       - /var/www/hls/substudio/jobs:/data/jobs

@@ -1,0 +1,5 @@
+interface:
+  display_name: "FFmpeg Subtitle Styler"
+  short_description: "Design, customize, and burn subtitles into videos using FFmpeg and libass"
+  default_prompt: "Use $ffmpeg-subtitle-styler to customize or burn styled subtitles using FFmpeg."
+

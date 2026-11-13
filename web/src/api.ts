@@ -58,12 +58,15 @@ export interface SubtitleConfig {
   margin_v?: number;
   outline?: number;
   shadow?: number;
+  line_spacing?: number;
+  mask_padding_x?: number;
   burn_video?: boolean;
   mask_enabled?: boolean;
   mask_color?: string;
   mask_blur?: number;
   mask_opacity?: number;
   mask_shape?: "pill" | "rounded" | "rectangle" | "bar";
+  mask_by_text?: boolean;
 }
 
 export interface Job {

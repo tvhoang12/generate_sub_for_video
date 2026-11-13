@@ -88,10 +88,11 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
 
     wav = work / "audio.wav"
     media.extract_audio(video, wav)
+    video_width, video_height = media.probe_video_dimensions(video)
 
     _update(job_id, step="transcribe", progress=8)
     speech = media.detect_speech(wav)
-    detected, cues = media.transcribe(wav, source_language, work / "asr")
+    detected, cues = media.transcribe(wav, source_language, work / "asr", speech=speech)
     if not cues:
         raise RuntimeError("Không phát hiện lời thoại nào trong video")
     cues = tighten_timing(cues, speech, int(settings.max_cue_seconds * 1000))
@@ -100,9 +101,16 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
     _update(job_id, step="clean", progress=25, report=report)
     translator = Translator(provider, film_ctx)
     raw_transcript = " ".join(c.text for c in cues)
-    global_context = translator.extract_global_context(raw_transcript)
-    report["global_context"] = global_context
-    log.info("Job %d: Trích xuất ngữ cảnh toàn cục: %s", job_id, global_context[:200])
+    try:
+        global_context = translator.extract_global_context(raw_transcript)
+        report["global_context"] = global_context
+        log.info("Job %d: Trích xuất ngữ cảnh toàn cục: %s", job_id, global_context[:200])
+    except Exception as e:
+        global_context = ""
+        report["global_context"] = ""
+        warn_msg = f"Không thể trích xuất ngữ cảnh toàn cục ({e}). Tiếp tục dịch với ngữ cảnh mặc định."
+        report.setdefault("warnings", []).append(warn_msg)
+        log.warning("Job %d: %s", job_id, warn_msg)
 
     burn_files: dict[str, Path] = {}
     homophone_fixed_source: dict[int, str] = {}
@@ -134,7 +142,10 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         srt = out / f"{stem}.{lang.code}.srt"
         srt.write_text(to_srt(translated), encoding="utf-8")
         ass = work / f"{lang.code}.ass"
-        ass.write_text(to_ass(translated, lang.font, config=subtitle_config), encoding="utf-8")
+        ass.write_text(
+            to_ass(translated, lang.font, config=subtitle_config, video_width=video_width, video_height=video_height),
+            encoding="utf-8",
+        )
         burn_files[lang.code] = ass
         report["outputs"].append({"file": srt.name, "kind": "srt", "lang": lang.code})
 
