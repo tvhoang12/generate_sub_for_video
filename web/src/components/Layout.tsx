@@ -1,11 +1,12 @@
 import { NavLink, Outlet } from "react-router";
-import { Clapperboard, ListVideo, Upload, type LucideIcon } from "lucide-react";
+import { Clapperboard, Layers, ListVideo, Upload, type LucideIcon } from "lucide-react";
 import { useMeta } from "../meta";
 
 const NAV: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
   { to: "/", label: "Tạo phụ đề", icon: Upload, end: true },
   { to: "/jobs", label: "Công việc", icon: ListVideo },
   { to: "/films", label: "Phim & thuật ngữ", icon: Clapperboard },
+  { to: "/hls", label: "Chuyển MP4 sang HLS", icon: Layers },
 ];
 
 export function Layout() {

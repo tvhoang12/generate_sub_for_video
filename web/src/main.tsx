@@ -9,6 +9,7 @@ import { JobsPage } from "./pages/Jobs";
 import { JobDetailPage } from "./pages/JobDetail";
 import { FilmsPage } from "./pages/Films";
 import { FilmDetailPage } from "./pages/FilmDetail";
+import { HlsConverterPage } from "./pages/HlsConverter";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -21,6 +22,7 @@ createRoot(document.getElementById("root")!).render(
             <Route path="jobs/:id" element={<JobDetailPage />} />
             <Route path="films" element={<FilmsPage />} />
             <Route path="films/:id" element={<FilmDetailPage />} />
+            <Route path="hls" element={<HlsConverterPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

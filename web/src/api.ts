@@ -103,7 +103,8 @@ export interface Job {
 export class ApiError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const url = path.startsWith("/api") ? path : `/api${path.startsWith("/") ? path : `/${path}`}`;
+  const res = await fetch(url, {
     ...init,
     headers: init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : undefined,
   });
@@ -138,6 +139,105 @@ export const api = {
   deleteJob: (id: number) => request<void>(`/jobs/${id}`, { method: "DELETE" }),
   fileUrl: (jobId: number, name: string) => `/api/jobs/${jobId}/files/${encodeURIComponent(name)}`,
   zipUrl: (jobId: number) => `/api/jobs/${jobId}/download`,
+  getQueueStatus: () =>
+    request<{ running: number; queued: number; max_concurrent: number }>("/api/queue"),
+};
+
+export type HlsJobStatus = "uploading" | "uploaded" | "queued" | "processing" | "done" | "error";
+
+export interface HlsJob {
+  id: string;
+  filename: string;
+  original_name: string;
+  source_size: number | null;
+  status: HlsJobStatus;
+  progress: number;
+  current_rendition: string | null;
+  selected_renditions: string[];
+  skipped_renditions: string[];
+  completed_renditions: string[];
+  logs: string[];
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+  src_height: number | null;
+  output_dir: string | null;
+  queue_position: number | null;
+}
+
+export interface RenditionInfo {
+  label: string;
+  resolution: string;
+  bitrateLabel: string;
+}
+
+export const HLS_RENDITIONS: RenditionInfo[] = [
+  { label: "360p", resolution: "640×360", bitrateLabel: "~800 Kbps" },
+  { label: "480p", resolution: "842×480", bitrateLabel: "~1.4 Mbps" },
+  { label: "720p", resolution: "1280×720", bitrateLabel: "~2.8 Mbps" },
+  { label: "1080p", resolution: "1920×1080", bitrateLabel: "~5.0 Mbps" },
+];
+
+export const hlsApi = {
+  initUpload: (filename: string, fileSize: number, renditions: string[]) =>
+    request<{ id: string; filename: string }>("/hls/upload/init", {
+      method: "POST",
+      body: JSON.stringify({ filename, fileSize, renditions }),
+    }),
+  uploadFile: (
+    jobId: string,
+    file: File,
+    onProgress: (percent: number) => void,
+    onAbortRef?: (abort: () => void) => void,
+  ): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      if (onAbortRef) onAbortRef(() => xhr.abort());
+      xhr.open("PUT", `/api/hls/upload/${jobId}`);
+      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress(100);
+          resolve();
+        } else {
+          let msg = "Upload thất bại";
+          try {
+            const body = JSON.parse(xhr.responseText);
+            msg = body.detail || body.message || msg;
+          } catch {
+            if (xhr.responseText) msg = xhr.responseText;
+          }
+          reject(new ApiError(msg));
+        }
+      };
+      xhr.onerror = () => reject(new ApiError("Mất kết nối tới máy chủ trong lúc upload"));
+      xhr.onabort = () => reject(new ApiError("Upload đã bị hủy"));
+      xhr.send(file);
+    });
+  },
+  startJobs: (ids: string[]) =>
+    request<{ started: number; reused: string[] }>("/hls/jobs/start", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+  listJobs: () => request<{ jobs: HlsJob[] }>("/hls/jobs"),
+  getJob: (jobId: string) => request<HlsJob>(`/hls/jobs/${jobId}`),
+  deleteJob: (jobId: string) =>
+    request<{ success: boolean; message: string }>(`/hls/jobs/${jobId}`, { method: "DELETE" }),
+  deleteJobs: (ids?: string[], all?: boolean) =>
+    request<{ success: boolean; count: number; message: string }>("/hls/jobs", {
+      method: "DELETE",
+      body: JSON.stringify({ ids, all }),
+    }),
+  downloadUrl: (jobId: string, rendition?: string) =>
+    `/api/hls/download/${jobId}${rendition ? `?rendition=${encodeURIComponent(rendition)}` : ""}`,
+  batchDownloadUrl: (ids?: string[], all?: boolean) =>
+    `/api/hls/download/batch?${all ? "all=true" : `ids=${ids?.join(",") || ""}`}`,
+  streamUrl: (jobId: string) => `/hls/${jobId}/master.m3u8`,
+  getQueueStatus: () =>
+    request<{ running: number; queued: number; max_concurrent: number; active_job_ids?: string[] }>(
+      "/hls/queue"
+    ),
 };
 
 /** Multipart upload through XHR, the only browser API that reports upload progress. */

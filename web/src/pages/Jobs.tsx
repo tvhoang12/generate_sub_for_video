@@ -38,9 +38,31 @@ export function JobsPage() {
   const { jobs, error } = useJobsPolling();
   const langLabel = useLanguageLabel();
 
+  const runningCount = jobs ? jobs.filter((j) => j.status === "running").length : 0;
+  const queuedCount = jobs ? jobs.filter((j) => j.status === "queued").length : 0;
+
   return (
     <>
-      <PageHeader title="Công việc" description="Video đang xử lý và đã hoàn thành. Trang tự cập nhật." actions={<LinkButton href="/" variant="primary">Tạo phụ đề mới</LinkButton>} />
+      <PageHeader
+        title="Công việc"
+        description="Video đang xử lý và đã hoàn thành. Trang tự cập nhật."
+        actions={
+          <div className="flex flex-wrap items-center gap-3">
+            {jobs && (runningCount > 0 || queuedCount > 0) && (
+              <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3.5 py-2 text-xs shadow-xs">
+                <span className="flex size-2 rounded-full bg-primary animate-pulse" />
+                <span className="font-semibold text-foreground">Hàng đợi Phụ đề:</span>
+                <span className="text-muted-foreground">
+                  {runningCount} đang chạy · {queuedCount} đang chờ
+                </span>
+              </div>
+            )}
+            <LinkButton href="/" variant="primary">
+              Tạo phụ đề mới
+            </LinkButton>
+          </div>
+        }
+      />
       {error && <div className="mb-4"><Alert tone="error" title="Không tải được danh sách">{error}</Alert></div>}
       {jobs === null ? (
         <p className="text-muted-foreground">Đang tải…</p>

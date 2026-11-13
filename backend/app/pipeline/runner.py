@@ -176,6 +176,7 @@ class JobRunner:
         self._queue: queue.Queue[int] = queue.Queue()
         self._provider_factory = provider_factory
         self._thread: threading.Thread | None = None
+        self._active_job_id: int | None = None
 
     def start(self) -> None:
         with Session(engine) as s:
@@ -195,11 +196,22 @@ class JobRunner:
     def submit(self, job_id: int) -> None:
         self._queue.put(job_id)
 
+    def get_status(self) -> dict:
+        return {
+            "running": 1 if self._active_job_id is not None else 0,
+            "active_job_id": self._active_job_id,
+            "queued": self._queue.qsize(),
+            "max_concurrent": 1,
+        }
+
     def _loop(self) -> None:
         while True:
             job_id = self._queue.get()
+            self._active_job_id = job_id
             try:
                 run_job(job_id, self._provider_factory)
             except Exception as e:  # noqa: BLE001 - any failure ends the job, never the worker
                 log.exception("job %s failed", job_id)
                 _update(job_id, status=JobStatus.FAILED, error=str(e) or type(e).__name__, finished_at=utcnow())
+            finally:
+                self._active_job_id = None

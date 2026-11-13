@@ -16,25 +16,65 @@ from sqlmodel import Session, select
 
 from .config import settings
 from .db import Film, GlossaryTerm, Job, JobStatus, STEPS, get_session, init_db
+from .hls import HlsRunner, hls_router
 from .languages import LANGUAGES, SOURCE_LANGUAGES
 from .pipeline.runner import JobRunner, job_dir, safe_name
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+
+class SuppressSuccessfulPollingFilter(logging.Filter):
+    """Suppress 200 OK access logs for high-frequency polling endpoints."""
+
+    POLLING_PATHS = {
+        "/api/hls/jobs",
+        "/api/hls/queue",
+        "/api/jobs",
+        "/api/queue",
+        "/api/meta",
+        "/health",
+    }
+
+    def _is_polling(self, path: str) -> bool:
+        clean = path.split("?")[0].rstrip("/")
+        return clean in self.POLLING_PATHS
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "uvicorn.access":
+            if hasattr(record, "args") and isinstance(record.args, tuple) and len(record.args) >= 5:
+                status = record.args[4]
+                path = str(record.args[2])
+                if status == 200 and self._is_polling(path):
+                    return False
+            msg = record.getMessage()
+            if " 200 " in msg or msg.endswith(" 200") or msg.endswith(" 200 OK"):
+                for p in self.POLLING_PATHS:
+                    if f'"{p}' in msg or f'"GET {p}' in msg:
+                        return False
+        return True
+
+
+_polling_filter = SuppressSuccessfulPollingFilter()
+logging.getLogger("uvicorn.access").addFilter(_polling_filter)
+
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-def create_app(runner: JobRunner | None = None) -> FastAPI:
+def create_app(runner: JobRunner | None = None, hls_runner: HlsRunner | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        logging.getLogger("uvicorn.access").addFilter(_polling_filter)
         init_db()
         app.state.runner = runner or JobRunner()
         app.state.runner.start()
+        app.state.hls_runner = hls_runner or HlsRunner()
+        app.state.hls_runner.start()
         yield
 
     app = FastAPI(title="SubStudio", lifespan=lifespan)
     app.include_router(_api_routes())
+    app.include_router(hls_router)
     if settings.web_dist.is_dir():
         app.mount("/assets", StaticFiles(directory=settings.web_dist / "assets"), name="assets")
 
@@ -77,19 +117,32 @@ def _api_routes():
         return obj
 
     @api.get("/meta")
-    def meta():
+    def meta(request: Request):
         model = {
             "claude": settings.claude_model,
             "openai": settings.openai_model,
             "gemini": settings.gemini_model,
         }.get(settings.translator, "")
+        sub_runner = getattr(request.app.state, "runner", None)
+        hls_runner = getattr(request.app.state, "hls_runner", None)
         return {
             "languages": [{"code": l.code, "label": l.label} for l in LANGUAGES.values()],
             "source_languages": [{"code": c, "label": n} for c, n in SOURCE_LANGUAGES.items()],
             "provider": settings.translator,
             "model": model,
             "steps": STEPS,
+            "queues": {
+                "subtitle": sub_runner.get_status() if (sub_runner and hasattr(sub_runner, "get_status")) else {},
+                "hls": hls_runner.get_status() if (hls_runner and hasattr(hls_runner, "get_status")) else {},
+            },
         }
+
+    @api.get("/queue")
+    def subtitle_queue_status(request: Request):
+        runner = getattr(request.app.state, "runner", None)
+        if runner and hasattr(runner, "get_status"):
+            return runner.get_status()
+        return {"running": 0, "queued": 0, "max_concurrent": 1}
 
     # ---- films & glossary ----
 

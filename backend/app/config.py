@@ -12,12 +12,34 @@ try:
     from dotenv import load_dotenv
     load_dotenv(PROJECT_ROOT / ".env")
 except ImportError:
-    pass
+    _env_file = PROJECT_ROOT / ".env"
+    if _env_file.is_file():
+        for _line in _env_file.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _v = _line.split("=", 1)
+            _k = _k.strip()
+            _v = _v.strip().strip("'\"")
+            if _k not in os.environ:
+                os.environ[_k] = _v
 
 
-def _path(name: str, default: Path) -> Path:
-    value = os.getenv(name)
-    return Path(value) if value else default
+def _path(names: str | list[str], default: Path) -> Path:
+    if isinstance(names, str):
+        names = [names]
+    value = None
+    for name in names:
+        val = os.getenv(name)
+        if val and val.strip():
+            value = val.strip()
+            break
+    if not value:
+        return default
+    p = Path(value)
+    if not p.is_absolute():
+        p = (PROJECT_ROOT / p).resolve()
+    return p
 
 
 @dataclass(frozen=True)
@@ -81,6 +103,43 @@ class Settings:
     max_cue_seconds: float = field(default_factory=lambda: float(os.getenv("MAX_CUE_SECONDS", "4.0")))
     video_crf: int = field(default_factory=lambda: int(os.getenv("VIDEO_CRF", "20")))
     video_preset: str = field(default_factory=lambda: os.getenv("VIDEO_PRESET", "veryfast"))
+
+    # HLS conversion settings
+    hls_storage_path: Path = field(
+        default_factory=lambda: _path(
+            ["HLS_STORAGE_PATH", "OUTPUT_DIR"],
+            _path("DATA_DIR", PROJECT_ROOT / "data") / "hls",
+        )
+    )
+    hls_upload_dir: Path = field(
+        default_factory=lambda: _path(
+            ["HLS_UPLOAD_DIR", "UPLOAD_DIR"],
+            _path("DATA_DIR", PROJECT_ROOT / "data") / "hls_uploads",
+        )
+    )
+    hls_preset: str = field(
+        default_factory=lambda: os.getenv("HLS_PRESET", os.getenv("FFMPEG_PRESET", "veryfast"))
+    )
+    hls_segment_duration: int = field(
+        default_factory=lambda: int(os.getenv("HLS_SEGMENT_DURATION", "6"))
+    )
+    hls_keyint: int = field(
+        default_factory=lambda: int(os.getenv("HLS_KEYINT", "48"))
+    )
+    hls_max_concurrent: int = field(
+        default_factory=lambda: int(os.getenv("HLS_MAX_CONCURRENT", "1"))
+    )
+    hls_ffmpeg_threads: int = field(
+        default_factory=lambda: int(os.getenv("HLS_FFMPEG_THREADS", "4"))
+    )
+
+    @property
+    def output_dir(self) -> Path:
+        return self.hls_storage_path
+
+    @property
+    def upload_dir(self) -> Path:
+        return self.hls_upload_dir
 
     @property
     def db_path(self) -> Path:
