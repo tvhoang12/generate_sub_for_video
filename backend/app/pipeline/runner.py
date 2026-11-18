@@ -71,6 +71,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         job = s.get(Job, job_id)
         film_ctx, source_language = _film_context(s, job)
         languages = [get_language(code) for code in job.languages]
+        sub_config = getattr(job, "subtitle_config", {}) or {}
 
     base = job_dir(job_id)
     video = base / "input" / job.video_filename
@@ -89,10 +90,10 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
     media.extract_audio(video, wav)
 
     _update(job_id, step="transcribe", progress=8)
-    speech = media.detect_speech(wav)
     detected, cues = media.transcribe(wav, source_language, work / "asr")
     if not cues:
         raise RuntimeError("Không phát hiện lời thoại nào trong video")
+    speech = [(c.start_ms, c.end_ms) for c in cues]
     cues = tighten_timing(cues, speech, int(settings.max_cue_seconds * 1000))
     report["source_language"] = detected
 
@@ -113,7 +114,8 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
             lang=lang,
             source_language=detected,
             global_context=global_context,
-            batch_size=35,
+            batch_size=settings.gemini_batch_size,
+            concurrency=settings.gemini_concurrency,
         )
 
         if not homophone_fixed_source:
@@ -133,7 +135,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         srt = out / f"{stem}.{lang.code}.srt"
         srt.write_text(to_srt(translated), encoding="utf-8")
         ass = work / f"{lang.code}.ass"
-        ass.write_text(to_ass(translated, lang.font), encoding="utf-8")
+        ass.write_text(to_ass(translated, lang.font, config=sub_config), encoding="utf-8")
         burn_files[lang.code] = ass
         report["outputs"].append({"file": srt.name, "kind": "srt", "lang": lang.code})
 
@@ -147,12 +149,16 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
     report["outputs"].append({"file": source_srt.name, "kind": "srt", "lang": detected})
     _update(job_id, progress=65, report=report)
 
-    for i, lang in enumerate(languages):
-        _update(job_id, step="render", progress=65 + int(35 * i / len(languages)))
-        mp4 = out / f"{stem} - {lang.code}.mp4"
-        media.burn_subtitles(video, burn_files[lang.code], mp4)
-        report["outputs"].append({"file": mp4.name, "kind": "video", "lang": lang.code})
-        _update(job_id, report=report)
+    burn_video = sub_config.get("burn_video", True)
+    if burn_video:
+        for i, lang in enumerate(languages):
+            _update(job_id, step="render", progress=65 + int(35 * i / len(languages)))
+            mp4 = out / f"{stem} - {lang.code}.mp4"
+            media.burn_subtitles(video, burn_files[lang.code], mp4)
+            report["outputs"].append({"file": mp4.name, "kind": "video", "lang": lang.code})
+            _update(job_id, report=report)
+    else:
+        log.info("Job %d: burn_video is False, skipping video rendering", job_id)
 
     _update(job_id, status=JobStatus.DONE, step=None, progress=100, report=report, finished_at=utcnow())
 

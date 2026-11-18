@@ -58,6 +58,7 @@ class Job(SQLModel, table=True):
     provider: str | None = None
     # {"source_language", "dropped": [...], "warnings": [...], "outputs": [...], "suggested_terms": [...]}
     report: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    subtitle_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
     finished_at: datetime | None = None
 
@@ -71,6 +72,11 @@ def init_db() -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
     SQLModel.metadata.create_all(engine)
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(job)").fetchall()]
+        if "subtitle_config" not in cols:
+            conn.exec_driver_sql("ALTER TABLE job ADD COLUMN subtitle_config JSON DEFAULT '{}'")
+            conn.commit()
 
 
 def get_session() -> Iterator[Session]:

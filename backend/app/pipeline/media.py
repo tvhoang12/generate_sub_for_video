@@ -264,6 +264,20 @@ def burn_subtitles(video: Path, ass: Path, out: Path, fonts_dir: Path | None = N
     vf = f"ass='{_filter_path(ass)}':shaping=complex"
     if fonts_dir:
         vf += f":fontsdir='{_filter_path(fonts_dir)}'"
-    _run([settings.ffmpeg, "-v", "error", "-y", "-i", str(video), "-vf", vf,
-          "-c:v", "libx264", "-preset", "medium", "-crf", str(settings.video_crf),
-          "-c:a", "copy", "-movflags", "+faststart", str(out)], timeout=7200)
+
+    encoder = settings.video_encoder
+    preset = settings.video_preset
+    threads = str(settings.ffmpeg_threads)
+
+    cmd = [settings.ffmpeg, "-v", "error", "-y", "-i", str(video), "-vf", vf]
+    if encoder == "h264_nvenc":
+        cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(settings.video_crf)]
+    else:
+        cmd += [
+            "-c:v", "libx264",
+            "-preset", preset,
+            "-crf", str(settings.video_crf),
+            "-threads", threads,
+        ]
+    cmd += ["-c:a", "copy", "-movflags", "+faststart", str(out)]
+    _run(cmd, timeout=7200)

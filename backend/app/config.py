@@ -42,6 +42,12 @@ class Settings:
 
     max_cue_seconds: float = field(default_factory=lambda: float(os.getenv("MAX_CUE_SECONDS", "7")))
     video_crf: int = field(default_factory=lambda: int(os.getenv("VIDEO_CRF", "20")))
+    video_preset: str = field(default_factory=lambda: os.getenv("VIDEO_PRESET", "veryfast"))
+    video_encoder: str = field(default_factory=lambda: os.getenv("VIDEO_ENCODER", "libx264"))
+    ffmpeg_threads: int = field(default_factory=lambda: int(os.getenv("FFMPEG_THREADS", "0")))
+    gemini_batch_size: int = field(default_factory=lambda: int(os.getenv("GEMINI_BATCH_SIZE", "70")))
+    gemini_concurrency: int = field(default_factory=lambda: int(os.getenv("GEMINI_CONCURRENCY", "2")))
+    gemini_rpm_limit: int = field(default_factory=lambda: int(os.getenv("GEMINI_RPM_LIMIT", "14")))
 
     @property
     def db_path(self) -> Path:

@@ -28,6 +28,68 @@ class LLMProvider(Protocol):
     def complete_batch(self, system: str, user: str) -> list[BatchItem]: ...
 
 
+import collections
+import threading
+import time
+
+
+class GeminiRateLimiter:
+    """Thread-safe sliding-window rate limiter to strictly cap Gemini API calls per minute."""
+
+    def __init__(self, max_rpm: int = 14) -> None:
+        self.max_rpm = max_rpm
+        self._lock = threading.Lock()
+        self._timestamps: collections.deque[float] = collections.deque()
+        self._min_interval = 60.0 / max_rpm if max_rpm > 0 else 0.0
+        self._last_call = 0.0
+
+    def wait(self) -> None:
+        if self.max_rpm <= 0:
+            return
+        import logging
+        log = logging.getLogger("substudio.providers")
+
+        while True:
+            sleep_time = 0.0
+            with self._lock:
+                now = time.time()
+                # 1. Purge timestamps older than 60s
+                while self._timestamps and now - self._timestamps[0] >= 60.0:
+                    self._timestamps.popleft()
+
+                # 2. Check if we reached max_rpm in the last 60 seconds
+                if len(self._timestamps) >= self.max_rpm:
+                    oldest = self._timestamps[0]
+                    sleep_time = max(0.2, 60.0 - (now - oldest) + 0.5)
+                    log.info(
+                        "Gemini Rate Limiter: Đã đạt %d/%d calls trong 60s qua. Tạm hoãn %.1fs để tuân thủ quota...",
+                        len(self._timestamps), self.max_rpm, sleep_time
+                    )
+                else:
+                    # 3. Pacing: ensure minimum spacing between calls
+                    elapsed = now - self._last_call
+                    if elapsed < self._min_interval:
+                        sleep_time = self._min_interval - elapsed
+                    else:
+                        # Safe to proceed!
+                        self._timestamps.append(now)
+                        self._last_call = now
+                        return
+
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+
+_gemini_rate_limiter: GeminiRateLimiter | None = None
+
+
+def get_gemini_rate_limiter() -> GeminiRateLimiter:
+    global _gemini_rate_limiter
+    if _gemini_rate_limiter is None:
+        _gemini_rate_limiter = GeminiRateLimiter(max_rpm=settings.gemini_rpm_limit)
+    return _gemini_rate_limiter
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -42,13 +104,12 @@ class GeminiProvider:
         self._model = model or settings.gemini_model
 
     def _generate_with_retry(self, **kwargs) -> Any:
-        import time
-        max_retries = 5
-        delay = 2.0
+        max_retries = 6
+        delay = 3.0
         current_kwargs = dict(kwargs)
-        original_model = current_kwargs.get("model", self._model)
         for attempt in range(1, max_retries + 1):
             try:
+                get_gemini_rate_limiter().wait()
                 return self._client.models.generate_content(**current_kwargs)
             except Exception as e:
                 err_str = str(e).lower()
@@ -56,20 +117,25 @@ class GeminiProvider:
                 if is_transient and attempt < max_retries:
                     import logging
                     log_fn = logging.getLogger("substudio.providers").warning
-                    if attempt >= 3 and "flash" in original_model:
-                        fallback_model = "gemini-flash-lite-latest" if "3.1" in original_model else "gemini-3.1-flash-lite"
-                        current_kwargs["model"] = fallback_model
-                        log_fn(
-                            "Gemini API transient error (%s). Trying fallback model '%s' in %.1fs (attempt %d/%d)...",
-                            e, fallback_model, delay, attempt, max_retries
-                        )
-                    else:
-                        log_fn(
-                            "Gemini API transient error (%s), retrying in %.1fs (attempt %d/%d)...",
-                            e, delay, attempt, max_retries
-                        )
-                    time.sleep(delay)
-                    delay *= 2
+
+                    # Extract retryDelay from error if provided (e.g. 'retryDelay': '22s' or 'retry in 22.78s')
+                    retry_wait = None
+                    m = re.search(r"retry\s+in\s+([0-9.]+)\s*s", str(e), re.IGNORECASE)
+                    if not m:
+                        m = re.search(r"['\"]retryDelay['\"]\s*:\s*['\"]([0-9.]+)", str(e))
+                    if m:
+                        try:
+                            retry_wait = float(m.group(1)) + 2.0
+                        except Exception:
+                            retry_wait = None
+
+                    actual_delay = retry_wait if retry_wait is not None else delay
+                    log_fn(
+                        "Gemini API transient/quota error (%s). Đang chờ %.1fs trước khi thử lại (lần thử %d/%d)...",
+                        e, actual_delay, attempt, max_retries
+                    )
+                    time.sleep(actual_delay)
+                    delay = max(delay * 2, actual_delay)
                     continue
                 raise
 

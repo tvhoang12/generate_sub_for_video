@@ -309,11 +309,16 @@ Summarise the key context in UNDER 150 WORDS strictly in technical English:
         lang: Language,
         source_language: str = "zh",
         global_context: str = "",
-        batch_size: int = 35,
+        batch_size: int = 70,
+        concurrency: int = 3,
     ) -> tuple[dict[int, str], dict[int, str]]:
-        """Steps 2, 3, 4: Chunk into batches of 35, use sliding window previous_context, auto-split retry."""
+        """Chunk into batches, use dialogue continuity previous_context, and process concurrently."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         fixed_src_by_id: dict[int, str] = {}
         trans_by_id: dict[int, str] = {}
+        dict_lock = threading.Lock()
 
         homophone_note = get_homophone_translation_prompt(source_language)
         homophone_rule = f"- {homophone_note}\n" if homophone_note else ""
@@ -328,10 +333,13 @@ Summarise the key context in UNDER 150 WORDS strictly in technical English:
 
         def _process_chunk(items: list[Any], prev_cues: list[Any], attempt: int = 1) -> list[BatchItem]:
             batch_payload = [{"id": c.id, "src": c.text} for c in items]
-            prev_payload = [
-                {"id": c.id, "src": fixed_src_by_id.get(c.id, c.text), "trans": trans_by_id.get(c.id, "")}
-                for c in prev_cues
-            ]
+            with dict_lock:
+                prev_payload = []
+                for c in prev_cues:
+                    item_info: dict[str, Any] = {"id": c.id, "src": fixed_src_by_id.get(c.id, c.text)}
+                    if c.id in trans_by_id and trans_by_id[c.id]:
+                        item_info["trans"] = trans_by_id[c.id]
+                    prev_payload.append(item_info)
 
             user_prompt = f"""<global_context>
 {global_context or "(not provided)"}
@@ -393,9 +401,10 @@ Translate every subtitle line in <batch> strictly and 100% into natural {lang.en
                     first_half = items[:mid]
                     second_half = items[mid:]
                     res1 = _process_chunk(first_half, prev_cues)
-                    for item in res1:
-                        trans_by_id[item.id] = clean_sub_text(item.trans, lang.code)
-                        fixed_src_by_id[item.id] = item.fixed_src.strip()
+                    with dict_lock:
+                        for item in res1:
+                            trans_by_id[item.id] = clean_sub_text(item.trans, lang.code)
+                            fixed_src_by_id[item.id] = item.fixed_src.strip()
                     part2_prev = (prev_cues + first_half)[-3:]
                     res2 = _process_chunk(second_half, part2_prev)
                     return res1 + res2
@@ -410,14 +419,40 @@ Translate every subtitle line in <batch> strictly and 100% into natural {lang.en
                     ]
                 raise
 
-        # Iterate sequentially with sliding window of 35 items
+        # Prepare all batches
+        batch_tuples = []
         for i in range(0, len(cues), batch_size):
             chunk = cues[i : i + batch_size]
             prev_chunk = cues[max(0, i - 3) : i]
-            items = _process_chunk(chunk, prev_chunk)
-            for item in items:
-                fixed_src_by_id[item.id] = item.fixed_src.strip()
-                trans_by_id[item.id] = clean_sub_text(item.trans, lang.code)
+            batch_tuples.append((chunk, prev_chunk))
+
+        if not batch_tuples:
+            return {}, {}
+
+        effective_workers = min(len(batch_tuples), max(1, concurrency))
+        if effective_workers <= 1:
+            for chunk, prev_chunk in batch_tuples:
+                items = _process_chunk(chunk, prev_chunk)
+                with dict_lock:
+                    for item in items:
+                        fixed_src_by_id[item.id] = item.fixed_src.strip()
+                        trans_by_id[item.id] = clean_sub_text(item.trans, lang.code)
+        else:
+            log.info(
+                "Translating %d cues across %d batches with concurrency=%d for %s",
+                len(cues), len(batch_tuples), effective_workers, lang.code
+            )
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                future_to_chunk = {
+                    executor.submit(_process_chunk, chunk, prev_chunk): chunk
+                    for chunk, prev_chunk in batch_tuples
+                }
+                for future in as_completed(future_to_chunk):
+                    batch_items = future.result()
+                    with dict_lock:
+                        for item in batch_items:
+                            fixed_src_by_id[item.id] = item.fixed_src.strip()
+                            trans_by_id[item.id] = clean_sub_text(item.trans, lang.code)
 
         # Fallback for any missing IDs: NEVER copy raw foreign source text into trans!
         missing_cues = [c for c in cues if c.id not in trans_by_id]
