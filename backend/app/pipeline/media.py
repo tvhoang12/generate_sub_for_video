@@ -376,8 +376,11 @@ def burn_subtitles(video: Path, ass: Path, out: Path, fonts_dir: Path | None = N
         cmd.extend(["-filter_threads", str(settings.ffmpeg_filter_threads)])
     cmd.extend([
         "-i", str(video), "-vf", vf,
-        "-c:v", "libx264", "-preset", settings.video_preset, "-crf", str(settings.video_crf),
     ])
+    if settings.video_encoder == "h264_nvenc":
+        cmd.extend(["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(settings.video_crf)])
+    else:
+        cmd.extend(["-c:v", "libx264", "-preset", settings.video_preset, "-crf", str(settings.video_crf)])
     if settings.ffmpeg_threads > 0:
         cmd.extend(["-threads", str(settings.ffmpeg_threads)])
     cmd.extend([

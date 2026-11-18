@@ -3,6 +3,8 @@
 import json
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -328,6 +330,7 @@ Summarise the key context in UNDER 150 WORDS strictly in technical English:
         source_language: str = "zh",
         global_context: str = "",
         batch_size: int | None = None,
+        concurrency: int = 1,
     ) -> tuple[dict[int, str], dict[int, str]]:
         """Steps 2, 3, 4: Chunk into batches of configurable size (default from TRANSLATE_CHUNK_SIZE),
         use sliding window previous_context, auto-split bisection on overflow."""
@@ -336,6 +339,7 @@ Summarise the key context in UNDER 150 WORDS strictly in technical English:
 
         fixed_src_by_id: dict[int, str] = {}
         trans_by_id: dict[int, str] = {}
+        dict_lock = threading.Lock()
 
         homophone_note = get_homophone_translation_prompt(source_language)
         homophone_rule = f"- {homophone_note}\n" if homophone_note else ""
@@ -348,12 +352,21 @@ Summarise the key context in UNDER 150 WORDS strictly in technical English:
             if t
         ]
 
+        def _store(items: list[BatchItem]) -> None:
+            with dict_lock:
+                for item in items:
+                    fixed_src_by_id[item.id] = item.fixed_src.strip()
+                    trans_by_id[item.id] = clean_sub_text(item.trans, lang.code)
+
         def _process_chunk(items: list[Any], prev_cues: list[Any], attempt: int = 1) -> list[BatchItem]:
             batch_payload = [{"id": c.id, "src": c.text} for c in items]
-            prev_payload = [
-                {"id": c.id, "src": fixed_src_by_id.get(c.id, c.text), "trans": trans_by_id.get(c.id, "")}
-                for c in prev_cues
-            ]
+            with dict_lock:
+                prev_payload = []
+                for c in prev_cues:
+                    item_info: dict[str, Any] = {"id": c.id, "src": fixed_src_by_id.get(c.id, c.text)}
+                    if trans_by_id.get(c.id):
+                        item_info["trans"] = trans_by_id[c.id]
+                    prev_payload.append(item_info)
 
             user_prompt = f"""<global_context>
 {global_context or "(not provided)"}
@@ -418,9 +431,7 @@ Translate every subtitle line in <batch> strictly and 100% into natural {lang.en
                     first_half = items[:mid]
                     second_half = items[mid:]
                     res1 = _process_chunk(first_half, prev_cues)
-                    for item in res1:
-                        trans_by_id[item.id] = clean_sub_text(item.trans, lang.code)
-                        fixed_src_by_id[item.id] = item.fixed_src.strip()
+                    _store(res1)
                     part2_prev = (prev_cues + first_half)[-3:]
                     res2 = _process_chunk(second_half, part2_prev)
                     return res1 + res2
@@ -435,14 +446,21 @@ Translate every subtitle line in <batch> strictly and 100% into natural {lang.en
                     ]
                 raise
 
-        # Iterate sequentially with sliding window of 35 items
-        for i in range(0, len(cues), batch_size):
-            chunk = cues[i : i + batch_size]
-            prev_chunk = cues[max(0, i - 3) : i]
-            items = _process_chunk(chunk, prev_chunk)
-            for item in items:
-                fixed_src_by_id[item.id] = item.fixed_src.strip()
-                trans_by_id[item.id] = clean_sub_text(item.trans, lang.code)
+        # Each batch carries the 3 preceding lines for dialogue continuity
+        batches = [(cues[i : i + batch_size], cues[max(0, i - 3) : i]) for i in range(0, len(cues), batch_size)]
+        workers = min(len(batches), concurrency)
+        if workers <= 1:
+            for chunk, prev_chunk in batches:
+                _store(_process_chunk(chunk, prev_chunk))
+        else:
+            log.info(
+                "Translating %d cues across %d batches with concurrency=%d for %s",
+                len(cues), len(batches), workers, lang.code,
+            )
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(_process_chunk, chunk, prev_chunk) for chunk, prev_chunk in batches]
+                for future in as_completed(futures):
+                    _store(future.result())
 
         # Fallback for any missing IDs: NEVER copy raw foreign source text into trans!
         missing_cues = [c for c in cues if c.id not in trans_by_id]

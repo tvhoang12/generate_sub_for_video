@@ -121,6 +121,11 @@ def init_db() -> None:
     except Exception as e:
         log.warning("Không thể tạo hls_upload_dir (%s): %s", settings.hls_upload_dir, e)
     SQLModel.metadata.create_all(engine)
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(job)").fetchall()]
+        if "subtitle_config" not in cols:
+            conn.exec_driver_sql("ALTER TABLE job ADD COLUMN subtitle_config JSON DEFAULT '{}'")
+            conn.commit()
 
 
 def get_session() -> Iterator[Session]:

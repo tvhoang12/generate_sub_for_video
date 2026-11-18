@@ -1,7 +1,10 @@
 """LLM backends. Each one turns (system, user, schema) into a validated schema instance."""
 
+import collections
 import json
 import re
+import threading
+import time
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel
@@ -287,6 +290,64 @@ class DeepSeekProvider:
             ) from e
 
 
+class GeminiRateLimiter:
+    """Thread-safe sliding-window rate limiter to strictly cap Gemini API calls per minute."""
+
+    def __init__(self, max_rpm: int = 14) -> None:
+        self.max_rpm = max_rpm
+        self._lock = threading.Lock()
+        self._timestamps: collections.deque[float] = collections.deque()
+        self._min_interval = 60.0 / max_rpm if max_rpm > 0 else 0.0
+        self._last_call = 0.0
+
+    def wait(self) -> None:
+        if self.max_rpm <= 0:
+            return
+        import logging
+
+        log = logging.getLogger("substudio.providers")
+
+        while True:
+            sleep_time = 0.0
+            with self._lock:
+                now = time.time()
+                # 1. Purge timestamps older than 60s
+                while self._timestamps and now - self._timestamps[0] >= 60.0:
+                    self._timestamps.popleft()
+
+                # 2. Check if we reached max_rpm in the last 60 seconds
+                if len(self._timestamps) >= self.max_rpm:
+                    oldest = self._timestamps[0]
+                    sleep_time = max(0.2, 60.0 - (now - oldest) + 0.5)
+                    log.info(
+                        "Gemini Rate Limiter: Đã đạt %d/%d calls trong 60s qua. Tạm hoãn %.1fs để tuân thủ quota...",
+                        len(self._timestamps), self.max_rpm, sleep_time
+                    )
+                else:
+                    # 3. Pacing: ensure minimum spacing between calls
+                    elapsed = now - self._last_call
+                    if elapsed < self._min_interval:
+                        sleep_time = self._min_interval - elapsed
+                    else:
+                        # Safe to proceed!
+                        self._timestamps.append(now)
+                        self._last_call = now
+                        return
+
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+
+_gemini_rate_limiter: GeminiRateLimiter | None = None
+
+
+def get_gemini_rate_limiter() -> GeminiRateLimiter:
+    global _gemini_rate_limiter
+    if _gemini_rate_limiter is None:
+        _gemini_rate_limiter = GeminiRateLimiter(max_rpm=settings.gemini_rpm_limit)
+    return _gemini_rate_limiter
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -296,6 +357,9 @@ class GeminiProvider:
     def __init__(self, model: str | None = None) -> None:
         import os
         from google import genai
+
+        # Guards model/key fallback: translation batches may call this provider concurrently.
+        self._fallback_lock = threading.Lock()
 
         primary_key = (
             settings.gemini_api_key if isinstance(getattr(settings, "gemini_api_key", None), str) else ""
@@ -383,8 +447,11 @@ class GeminiProvider:
         errors_history: list[str] = []
 
         for _ in range(total_attempts):
-            current_model = self._models[self._current_model_idx]
-            current_key = self._keys[self._current_key_idx]
+            with self._fallback_lock:
+                position = (self._current_key_idx, self._current_model_idx)
+                client = self._client
+            current_model = self._models[position[1]]
+            current_key = self._keys[position[0]]
             key_preview = f"{current_key[:10]}...{current_key[-4:]}" if len(current_key) > 14 else "***"
 
             call_kwargs = dict(kwargs)
@@ -393,15 +460,16 @@ class GeminiProvider:
             transient_retries = 1
             for attempt in range(1, transient_retries + 2):
                 try:
-                    resp = self._client.models.generate_content(**call_kwargs)
+                    get_gemini_rate_limiter().wait()
+                    resp = client.models.generate_content(**call_kwargs)
                     raw_text = getattr(resp, "text", "") or ""
                     if raw_text and _is_rate_limit_error(raw_text) and not (raw_text.startswith("{") or raw_text.startswith("[")):
                         raise RuntimeError(f"Rate limit exceeded trong response text: {raw_text}")
 
                     # Ghi nhớ model và key hoạt động thành công
                     self._model = current_model
-                    GeminiProvider._shared_key_idx = self._current_key_idx
-                    GeminiProvider._shared_model_idx = self._current_model_idx
+                    GeminiProvider._shared_key_idx = position[0]
+                    GeminiProvider._shared_model_idx = position[1]
                     return resp
                 except Exception as e:
                     err_lower = str(e).lower()
@@ -418,8 +486,11 @@ class GeminiProvider:
                     break
 
             # Chuyển sang model tiếp theo trong danh sách
-            if not self._advance_to_next_model():
-                break
+            # Another thread may already have moved past the failed model; do not skip one.
+            with self._fallback_lock:
+                moved = (self._current_key_idx, self._current_model_idx) != position
+                if not moved and not self._advance_to_next_model():
+                    break
 
         summary_errors = "\n - ".join(errors_history[-6:])
         raise ProviderError(

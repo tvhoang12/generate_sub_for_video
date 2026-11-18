@@ -122,7 +122,8 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
             lang=lang,
             source_language=detected,
             global_context=global_context,
-            batch_size=settings.translate_chunk_size,
+            batch_size=settings.gemini_batch_size if provider.name == "gemini" else settings.translate_chunk_size,
+            concurrency=settings.gemini_concurrency if provider.name == "gemini" else 1,
         )
 
         if not homophone_fixed_source:
@@ -159,12 +160,15 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
     report["outputs"].append({"file": source_srt.name, "kind": "srt", "lang": detected})
     _update(job_id, progress=65, report=report)
 
-    for i, lang in enumerate(languages):
-        _update(job_id, step="render", progress=65 + int(35 * i / len(languages)))
-        mp4 = out / f"{stem} - {lang.code}.mp4"
-        media.burn_subtitles(video, burn_files[lang.code], mp4)
-        report["outputs"].append({"file": mp4.name, "kind": "video", "lang": lang.code})
-        _update(job_id, report=report)
+    if subtitle_config.get("burn_video", True):
+        for i, lang in enumerate(languages):
+            _update(job_id, step="render", progress=65 + int(35 * i / len(languages)))
+            mp4 = out / f"{stem} - {lang.code}.mp4"
+            media.burn_subtitles(video, burn_files[lang.code], mp4)
+            report["outputs"].append({"file": mp4.name, "kind": "video", "lang": lang.code})
+            _update(job_id, report=report)
+    else:
+        log.info("Job %d: burn_video is False, skipping video rendering", job_id)
 
     _update(job_id, status=JobStatus.DONE, step=None, progress=100, report=report, finished_at=utcnow())
 

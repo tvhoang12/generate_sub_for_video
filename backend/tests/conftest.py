@@ -7,6 +7,7 @@ from pathlib import Path
 _tmp = tempfile.mkdtemp(prefix="substudio-test-")
 os.environ["DATA_DIR"] = _tmp
 os.environ["TRANSLATOR_PROVIDER"] = "mock"
+os.environ["GEMINI_RPM_LIMIT"] = "0"  # no real API in tests, so no pacing
 os.environ["WEB_DIST"] = str(Path(_tmp) / "no-web")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
