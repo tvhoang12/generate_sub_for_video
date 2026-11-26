@@ -96,6 +96,8 @@ class DeepSeekProvider:
         self._temperature = float(getattr(settings, "translate_temperature", 0.3))
         self._max_tokens = int(getattr(settings, "translate_max_tokens", 8192))
         self._client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        # Token totals per model for this instance; the runner creates one provider per job.
+        self._usage_totals: dict[str, collections.Counter] = {}
 
     def _advance_to_next_model(self) -> bool:
         import logging
@@ -130,6 +132,34 @@ class DeepSeekProvider:
             getattr(choices[0], "finish_reason", None) if choices else None,
             seconds,
         )
+
+        totals = self._usage_totals.setdefault(model, collections.Counter())
+        totals["calls"] += 1
+        for key, source, attr in (
+            ("prompt", usage, "prompt_tokens"),
+            ("cache_hit", usage, "prompt_cache_hit_tokens"),
+            ("cache_miss", usage, "prompt_cache_miss_tokens"),
+            ("completion", usage, "completion_tokens"),
+            ("reasoning", details, "reasoning_tokens"),
+            ("total", usage, "total_tokens"),
+        ):
+            value = getattr(source, attr, None)
+            totals[key] += value if isinstance(value, int) else 0
+
+    def log_usage_summary(self, job_id: int) -> None:
+        """Log one line per model with the tokens billed since this provider was created."""
+        import logging
+
+        for model, totals in self._usage_totals.items():
+            logging.getLogger("substudio.providers").info(
+                "DeepSeek usage TOTAL job=%s model=%s calls=%d prompt=%d cache_hit=%d cache_miss=%d "
+                "completion=%d reasoning=%d total=%d",
+                job_id,
+                model,
+                *(totals[k] for k in (
+                    "calls", "prompt", "cache_hit", "cache_miss", "completion", "reasoning", "total"
+                )),
+            )
 
     def _call_with_retry(
         self,

@@ -106,53 +106,58 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
     translator = Translator(provider, film_ctx)
     raw_transcript = " ".join(c.text for c in cues)
     try:
-        global_context = translator.extract_global_context(raw_transcript)
-        report["global_context"] = global_context
-        log.info("Job %d: Trích xuất ngữ cảnh toàn cục: %s", job_id, global_context[:200])
-    except Exception as e:
-        global_context = ""
-        report["global_context"] = ""
-        warn_msg = f"Không thể trích xuất ngữ cảnh toàn cục ({e}). Tiếp tục dịch với ngữ cảnh mặc định."
-        report.setdefault("warnings", []).append(warn_msg)
-        log.warning("Job %d: %s", job_id, warn_msg)
+        try:
+            global_context = translator.extract_global_context(raw_transcript)
+            report["global_context"] = global_context
+            log.info("Job %d: Trích xuất ngữ cảnh toàn cục: %s", job_id, global_context[:200])
+        except Exception as e:
+            global_context = ""
+            report["global_context"] = ""
+            warn_msg = f"Không thể trích xuất ngữ cảnh toàn cục ({e}). Tiếp tục dịch với ngữ cảnh mặc định."
+            report.setdefault("warnings", []).append(warn_msg)
+            log.warning("Job %d: %s", job_id, warn_msg)
 
-    burn_files: dict[str, Path] = {}
-    homophone_fixed_source: dict[int, str] = {}
+        burn_files: dict[str, Path] = {}
+        homophone_fixed_source: dict[int, str] = {}
 
-    for i, lang in enumerate(languages):
-        _update(job_id, step="translate", progress=35 + int(30 * i / len(languages)), report=report)
-        fixed_src_by_id, trans_by_id = translator.translate_in_batches(
-            cues,
-            lang=lang,
-            source_language=detected,
-            global_context=global_context,
-            batch_size=settings.gemini_batch_size if provider.name == "gemini" else settings.translate_chunk_size,
-            concurrency=settings.gemini_concurrency if provider.name == "gemini" else 1,
-        )
+        for i, lang in enumerate(languages):
+            _update(job_id, step="translate", progress=35 + int(30 * i / len(languages)), report=report)
+            fixed_src_by_id, trans_by_id = translator.translate_in_batches(
+                cues,
+                lang=lang,
+                source_language=detected,
+                global_context=global_context,
+                batch_size=settings.gemini_batch_size if provider.name == "gemini" else settings.translate_chunk_size,
+                concurrency=settings.gemini_concurrency if provider.name == "gemini" else 1,
+            )
 
-        if not homophone_fixed_source:
-            homophone_fixed_source = fixed_src_by_id
-            for c in cues:
-                fixed = fixed_src_by_id.get(c.id, c.text)
-                if fixed != c.text:
-                    report["homophone_corrections"].append({
-                        "id": c.id,
-                        "original": c.text,
-                        "corrected": fixed,
-                    })
-            if report["homophone_corrections"]:
-                log.info("Job %d: Phát hiện và sửa %d lỗi đồng âm", job_id, len(report["homophone_corrections"]))
+            if not homophone_fixed_source:
+                homophone_fixed_source = fixed_src_by_id
+                for c in cues:
+                    fixed = fixed_src_by_id.get(c.id, c.text)
+                    if fixed != c.text:
+                        report["homophone_corrections"].append({
+                            "id": c.id,
+                            "original": c.text,
+                            "corrected": fixed,
+                        })
+                if report["homophone_corrections"]:
+                    log.info("Job %d: Phát hiện và sửa %d lỗi đồng âm", job_id, len(report["homophone_corrections"]))
 
-        translated = [Cue(c.id, c.start_ms, c.end_ms, trans_by_id.get(c.id, "")) for c in cues]
-        srt = out / f"{stem}.{lang.code}.srt"
-        srt.write_text(to_srt(translated), encoding="utf-8")
-        ass = work / f"{lang.code}.ass"
-        ass.write_text(
-            to_ass(translated, lang.font, config=subtitle_config, video_width=video_width, video_height=video_height),
-            encoding="utf-8",
-        )
-        burn_files[lang.code] = ass
-        report["outputs"].append({"file": srt.name, "kind": "srt", "lang": lang.code})
+            translated = [Cue(c.id, c.start_ms, c.end_ms, trans_by_id.get(c.id, "")) for c in cues]
+            srt = out / f"{stem}.{lang.code}.srt"
+            srt.write_text(to_srt(translated), encoding="utf-8")
+            ass = work / f"{lang.code}.ass"
+            ass.write_text(
+                to_ass(translated, lang.font, config=subtitle_config, video_width=video_width, video_height=video_height),
+                encoding="utf-8",
+            )
+            burn_files[lang.code] = ass
+            report["outputs"].append({"file": srt.name, "kind": "srt", "lang": lang.code})
+    finally:
+        # Also on failure: tokens of the calls already made are billed.
+        if log_summary := getattr(provider, "log_usage_summary", None):
+            log_summary(job_id)
 
     # Write source SRT with corrected homophones
     source_cues = [
