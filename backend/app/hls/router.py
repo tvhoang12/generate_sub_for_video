@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
+from starlette.background import BackgroundTask
 
 from ..config import settings
 from ..db import HlsJob, HlsJobStatus, get_session, utcnow
@@ -359,44 +360,8 @@ def delete_jobs(body: JobsDeleteIn, s: SessionDep):
 
 # ── Download endpoints ──────────────────────────────────────────────────────
 
-@hls_router.get("/api/hls/download/{job_id}")
-def download_single(job_id: str, s: SessionDep, rendition: str | None = None):
-    job = s.get(HlsJob, job_id)
-    if not job:
-        raise HTTPException(404, "Không tìm thấy tác vụ")
-    if job.status != HlsJobStatus.DONE:
-        raise HTTPException(400, "Tác vụ chưa hoàn thành")
-
-    output_dir = resolve_job_output_dir(job, job_id, s)
-    source_dir = output_dir / rendition if rendition else output_dir
-
-    if rendition and not (source_dir / "index.m3u8").is_file():
-        raise HTTPException(404, f"Độ phân giải {rendition} không tồn tại")
-
-    stem = Path(job.original_name).stem
-    zip_name = f"{stem}_{rendition}_hls.zip" if rendition else f"{stem}_hls.zip"
-
-    # Create temporary zip archive
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    tmp_path = Path(tmp.name)
-    tmp.close()
-
-    folder_prefix = f"{stem}_{rendition}_hls" if rendition else f"{stem}_hls"
-    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for file_path in source_dir.rglob("*"):
-            if file_path.is_file():
-                rel_path = file_path.relative_to(source_dir)
-                z.write(file_path, f"{folder_prefix}/{rel_path.as_posix()}")
-
-    return FileResponse(
-        tmp_path,
-        media_type="application/zip",
-        filename=zip_name,
-        background=None,  # Or cleanup after download
-    )
-
-
 @hls_router.get("/api/hls/download/batch")
+@hls_router.get("/hls/download/batch")
 def download_batch(
     s: SessionDep,
     ids: str | None = None,
@@ -428,73 +393,67 @@ def download_batch(
     tmp_path = Path(tmp.name)
     tmp.close()
 
-    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as z:
+    used_folders: set[str] = set()
+    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as z:
         for job, out_dir in valid_jobs:
-            stem = Path(job.original_name).stem
+            raw_stem = Path(job.original_name).stem if job.original_name else f"job_{job.id[:8]}"
+            folder_name = f"{raw_stem}_hls"
+            if folder_name in used_folders:
+                folder_name = f"{raw_stem}_{job.id[:8]}_hls"
+            used_folders.add(folder_name)
+
             for file_path in out_dir.rglob("*"):
                 if file_path.is_file():
                     rel_path = file_path.relative_to(out_dir)
-                    z.write(file_path, f"{stem}_hls/{rel_path.as_posix()}")
+                    z.write(file_path, f"{folder_name}/{rel_path.as_posix()}")
 
-    return FileResponse(tmp_path, media_type="application/zip", filename=zip_name)
+    return FileResponse(
+        tmp_path,
+        media_type="application/zip",
+        filename=zip_name,
+        background=BackgroundTask(tmp_path.unlink, missing_ok=True),
+    )
+
+
+@hls_router.get("/api/hls/download/{job_id}")
+@hls_router.get("/hls/download/{job_id}")
+def download_single(job_id: str, s: SessionDep, rendition: str | None = None):
+    job = s.get(HlsJob, job_id)
+    if not job:
+        raise HTTPException(404, "Không tìm thấy tác vụ")
+    if job.status != HlsJobStatus.DONE:
+        raise HTTPException(400, "Tác vụ chưa hoàn thành")
+
+    output_dir = resolve_job_output_dir(job, job_id, s)
+    source_dir = output_dir / rendition if rendition else output_dir
+
+    if rendition and not (source_dir / "index.m3u8").is_file():
+        raise HTTPException(404, f"Độ phân giải {rendition} không tồn tại")
+
+    stem = Path(job.original_name).stem
+    zip_name = f"{stem}_{rendition}_hls.zip" if rendition else f"{stem}_hls.zip"
+
+    # Create temporary zip archive
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp_path = Path(tmp.name)
+    tmp.close()
+
+    folder_prefix = f"{stem}_{rendition}_hls" if rendition else f"{stem}_hls"
+    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as z:
+        for file_path in source_dir.rglob("*"):
+            if file_path.is_file():
+                rel_path = file_path.relative_to(source_dir)
+                z.write(file_path, f"{folder_prefix}/{rel_path.as_posix()}")
+
+    return FileResponse(
+        tmp_path,
+        media_type="application/zip",
+        filename=zip_name,
+        background=BackgroundTask(tmp_path.unlink, missing_ok=True),
+    )
 
 
 # ── Streaming route for HLS ─────────────────────────────────────────────────
-
-@hls_router.api_route("/hls/{job_id}/{file_path:path}", methods=["GET", "HEAD", "OPTIONS"])
-@hls_router.api_route("/api/hls/{job_id}/{file_path:path}", methods=["GET", "HEAD", "OPTIONS"])
-def stream_hls(job_id: str, file_path: str, request: Request, s: SessionDep):
-    # CORS Preflight
-    if request.method == "OPTIONS":
-        return Response(
-            status_code=204,
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-                "Access-Control-Allow-Headers": "Range, Accept-Encoding, Origin, X-Requested-With, Content-Type, Accept",
-                "Access-Control-Expose-Headers": "Content-Length, Content-Range",
-            },
-        )
-
-    # Directory Traversal defense
-    if ".." in file_path or "\0" in file_path:
-        raise HTTPException(400, "Đường dẫn file không hợp lệ")
-
-    job = s.get(HlsJob, job_id)
-    base_dir = resolve_job_output_dir(job, job_id, s)
-    target = (base_dir / file_path).resolve()
-
-    resolved_base = base_dir.resolve()
-    if not (target == resolved_base or target.is_relative_to(resolved_base)):
-        raise HTTPException(403, "Forbidden: Truy cập ngoài thư mục HLS")
-
-    if not target.is_file():
-        raise HTTPException(404, "Không tìm thấy file HLS")
-
-    ext = target.suffix.lower()
-    content_type = MIME_TYPES.get(ext, "application/octet-stream")
-
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-        "Access-Control-Allow-Headers": "Range, Accept-Encoding, Origin, X-Requested-With, Content-Type, Accept",
-        "Access-Control-Expose-Headers": "Content-Length, Content-Range",
-        "Content-Type": content_type,
-    }
-
-    if ext == ".m3u8":
-        headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    elif ext in (".ts", ".m4s"):
-        headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    else:
-        headers["Cache-Control"] = "public, max-age=3600"
-
-    if request.method == "HEAD":
-        headers["Content-Length"] = str(target.stat().st_size)
-        return Response(status_code=200, headers=headers)
-
-    return FileResponse(target, headers=headers, media_type=content_type)
-
 
 @hls_router.get("/hls/{job_id}/player", response_class=HTMLResponse)
 @hls_router.get("/api/hls/{job_id}/player", response_class=HTMLResponse)
@@ -550,4 +509,59 @@ def player_hls(job_id: str, s: SessionDep):
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+
+@hls_router.api_route("/hls/{job_id}/{file_path:path}", methods=["GET", "HEAD", "OPTIONS"])
+@hls_router.api_route("/api/hls/{job_id}/{file_path:path}", methods=["GET", "HEAD", "OPTIONS"])
+def stream_hls(job_id: str, file_path: str, request: Request, s: SessionDep):
+    # CORS Preflight
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "Range, Accept-Encoding, Origin, X-Requested-With, Content-Type, Accept",
+                "Access-Control-Expose-Headers": "Content-Length, Content-Range",
+            },
+        )
+
+    # Directory Traversal defense
+    if ".." in file_path or "\0" in file_path:
+        raise HTTPException(400, "Đường dẫn file không hợp lệ")
+
+    job = s.get(HlsJob, job_id)
+    base_dir = resolve_job_output_dir(job, job_id, s)
+    target = (base_dir / file_path).resolve()
+
+    resolved_base = base_dir.resolve()
+    if not (target == resolved_base or target.is_relative_to(resolved_base)):
+        raise HTTPException(403, "Forbidden: Truy cập ngoài thư mục HLS")
+
+    if not target.is_file():
+        raise HTTPException(404, "Không tìm thấy file HLS")
+
+    ext = target.suffix.lower()
+    content_type = MIME_TYPES.get(ext, "application/octet-stream")
+
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Range, Accept-Encoding, Origin, X-Requested-With, Content-Type, Accept",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range",
+        "Content-Type": content_type,
+    }
+
+    if ext == ".m3u8":
+        headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    elif ext in (".ts", ".m4s"):
+        headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        headers["Cache-Control"] = "public, max-age=3600"
+
+    if request.method == "HEAD":
+        headers["Content-Length"] = str(target.stat().st_size)
+        return Response(status_code=200, headers=headers)
+
+    return FileResponse(target, headers=headers, media_type=content_type)
 

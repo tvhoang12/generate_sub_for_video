@@ -37,9 +37,16 @@ Mở `http://localhost:8000`. Máy khác trong mạng nội bộ truy cập qua 
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `TRANSLATOR_PROVIDER` | `gemini` | `gemini`, `claude`, `openai`, hoặc `mock` (bản dịch giả, chỉ để thử) |
-| `GEMINI_API_KEY` | *(trống)* | API key cho Google Gemini |
-| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Model Gemini (Gemini Flash Lite dịch theo ngữ cảnh, kiểm tra lỗi đồng âm tiếng Trung) |
+| `TRANSLATOR_PROVIDER` | `deepseek` | `deepseek`, `gemini`, `claude`, `openai`, hoặc `mock` (bản dịch giả, chỉ để thử) |
+| `DEEPSEEK_API_KEY` | *(trống)* | API key cho DeepSeek |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | Base URL cho DeepSeek API |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | Model DeepSeek chính (`deepseek-flash` = DeepSeek V4.1 Flash: cực nhanh, context 1M) |
+| `DEEPSEEK_FALLBACK_MODELS` | `deepseek-v4-pro` | Model DeepSeek dự phòng khi model chính quá tải |
+| `TRANSLATE_CHUNK_SIZE` | `50` | Số lượng câu dịch mỗi đợt (tối ưu tốc độ cho video dài đến 45 phút) |
+| `TRANSLATE_TEMPERATURE` | `0.3` | Nhiệt độ model (thấp giúp bản dịch ổn định, bám sát nghĩa) |
+| `TRANSLATE_MAX_TOKENS` | `8192` | Giới hạn token tối đa mỗi lượt gọi batch |
+| `GEMINI_API_KEY` | *(trống)* | API key cho Google Gemini (dự phòng) |
+| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Model Gemini |
 | `OPENAI_API_KEY` | *(trống)* | API key cho OpenAI |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model OpenAI (`gpt-4o-mini`: nhanh, rẻ; `gpt-4o`: văn phong dịch cao cấp nhất) |
 | `FUNASR_THREADS` | số nhân CPU | Số luồng dùng cho nhận dạng giọng nói |

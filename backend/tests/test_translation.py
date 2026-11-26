@@ -12,6 +12,7 @@ from app.translation.homophones import (
     get_homophone_translation_prompt,
 )
 from app.translation.providers import (
+    DeepSeekProvider,
     GeminiProvider,
     MockProvider,
     OpenAIProvider,
@@ -43,6 +44,13 @@ def test_make_provider_defaults_and_options():
     assert isinstance(p_mock, MockProvider)
     assert p_mock.name == "mock"
 
+    # DeepSeek provider with key
+    with patch("app.translation.providers.settings", MagicMock(deepseek_api_key="mock-key")), patch("openai.OpenAI"):
+        p_deepseek = make_provider("deepseek", model="deepseek-flash")
+        assert isinstance(p_deepseek, DeepSeekProvider)
+        assert p_deepseek.name == "deepseek"
+        assert p_deepseek._model == "deepseek-flash"
+
     # OpenAI provider with key
     with patch("app.translation.providers.settings", MagicMock(openai_api_key="mock-key")), patch("openai.OpenAI"):
         p_openai = make_provider("openai", model="gpt-4o-mini")
@@ -53,6 +61,115 @@ def test_make_provider_defaults_and_options():
     # Invalid provider
     with pytest.raises(ValueError, match="TRANSLATOR_PROVIDER không hợp lệ"):
         make_provider("invalid_provider")
+
+
+def test_deepseek_provider_missing_api_key(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    with patch("app.translation.providers.settings", MagicMock(deepseek_api_key="")):
+        with pytest.raises(ProviderError, match="Chưa cấu hình DEEPSEEK_API_KEY"):
+            DeepSeekProvider()
+
+
+def test_deepseek_provider_complete_success(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.content = '{"id": 1, "text": "DeepSeek翻译测试"}'
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = DeepSeekProvider()
+        result = provider.complete("system instruction", "user prompt", DummySchema)
+        assert result.id == 1
+        assert result.text == "DeepSeek翻译测试"
+
+
+def test_deepseek_provider_json_markdown_fallback(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.content = '```json\n{"id": 2, "text": "Markdown Codeblock Cleaned"}\n```'
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = DeepSeekProvider()
+        result = provider.complete("system instruction", "user prompt", DummySchema)
+        assert result.id == 2
+        assert result.text == "Markdown Codeblock Cleaned"
+
+
+def test_deepseek_provider_complete_batch(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.content = '{"items": [{"id": 10, "fixed_src": "你好", "trans": "Hello"}]}'
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = DeepSeekProvider()
+        items = provider.complete_batch("system", "user")
+        assert len(items) == 1
+        assert items[0].id == 10
+        assert items[0].fixed_src == "你好"
+        assert items[0].trans == "Hello"
+
+
+def test_deepseek_provider_extract_global_context(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Genre: Drama. Setting: Ancient China."
+    mock_response = MagicMock(choices=[mock_choice])
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        provider = DeepSeekProvider()
+        context = provider.extract_global_context("system", "user")
+        assert "Ancient China" in context
+
+
+def test_deepseek_provider_fallback_on_api_error_succeeds(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    mock_settings = MagicMock(
+        deepseek_api_key="test-deepseek-key",
+        deepseek_base_url="https://api.deepseek.com/v1",
+        deepseek_model="deepseek-flash",
+        deepseek_fallback_models="deepseek-v4-pro",
+        translate_temperature=0.3,
+        translate_max_tokens=8192,
+    )
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.content = '{"id": 1, "text": "Fallback Pro OK"}'
+    mock_response = MagicMock(choices=[mock_choice])
+
+    # First attempt fails on deepseek-flash, second succeeds on deepseek-v4-pro
+    mock_client.chat.completions.create.side_effect = [
+        Exception("503 Service Unavailable"),
+        mock_response,
+    ]
+
+    with patch("app.translation.providers.settings", mock_settings), patch("openai.OpenAI", return_value=mock_client):
+        DeepSeekProvider._shared_model_idx = 0
+        provider = DeepSeekProvider()
+        assert provider._models == ["deepseek-flash", "deepseek-v4-pro"]
+
+        result = provider.complete("system instruction", "user prompt", DummySchema)
+        assert result.id == 1
+        assert result.text == "Fallback Pro OK"
+        assert provider._model == "deepseek-v4-pro"
 
 
 def test_gemini_provider_missing_api_key(monkeypatch):

@@ -124,7 +124,7 @@ def test_stream_hls_cors_and_path_traversal(client, tmp_path):
     job_id = init_res.json()["id"]
 
     # Path traversal attempt
-    res = client.get(f"/hls/{job_id}/../secret.txt")
+    res = client.get(f"/hls/{job_id}/..%2fsecret.txt")
     assert res.status_code == 400
 
     # OPTIONS preflight
@@ -158,4 +158,61 @@ def test_stream_hls_cors_and_path_traversal(client, tmp_path):
     res_api_player = client.get(f"/api/hls/{job_id}/player")
     assert res_api_player.status_code == 200
     assert "text/html" in res_api_player.headers.get("content-type", "")
+
+
+def test_download_batch_and_single_routes(client, tmp_path):
+    import io
+    import zipfile
+
+    # 1. Test batch endpoint does not get shadowed by single download route
+    res_bad = client.get("/api/hls/download/batch")
+    assert res_bad.status_code == 400
+
+    res_missing = client.get("/api/hls/download/batch?ids=nonexistent-id")
+    assert res_missing.status_code == 404
+    assert "Không có file HLS nào đã hoàn tất để tải xuống" in res_missing.json()["detail"]
+
+    # 2. Create mock completed job
+    init_res = client.post("/api/hls/upload/init", json={"filename": "test_video.mp4", "fileSize": 100})
+    job_id = init_res.json()["id"]
+
+    job_dir = settings.hls_storage_path / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "master.m3u8").write_text("#EXTM3U\n")
+    (job_dir / "index.m3u8").write_text("#EXTM3U\n")
+
+    with Session(engine) as s:
+        job = s.get(HlsJob, job_id)
+        job.status = HlsJobStatus.DONE
+        job.output_dir = str(job_dir)
+        s.add(job)
+        s.commit()
+
+    # 3. Test single download
+    res_single = client.get(f"/api/hls/download/{job_id}")
+    assert res_single.status_code == 200
+    assert res_single.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(res_single.content)) as z:
+        names = z.namelist()
+        assert any("master.m3u8" in n for n in names)
+
+    # 4. Test batch download with ids
+    res_batch_ids = client.get(f"/api/hls/download/batch?ids={job_id}")
+    assert res_batch_ids.status_code == 200
+    assert res_batch_ids.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(res_batch_ids.content)) as z:
+        names = z.namelist()
+        assert any("test_video_hls/master.m3u8" in n for n in names)
+
+    # 5. Test batch download with all=true
+    res_batch_all = client.get("/api/hls/download/batch?all=true")
+    assert res_batch_all.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(res_batch_all.content)) as z:
+        names = z.namelist()
+        assert any("test_video_hls/master.m3u8" in n for n in names)
+
+    # 6. Test /hls/download/batch alias without /api prefix
+    res_batch_alias = client.get(f"/hls/download/batch?ids={job_id}")
+    assert res_batch_alias.status_code == 200
+
 

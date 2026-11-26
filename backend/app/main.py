@@ -119,6 +119,7 @@ def _api_routes():
     @api.get("/meta")
     def meta(request: Request):
         model = {
+            "deepseek": settings.deepseek_model,
             "claude": settings.claude_model,
             "openai": settings.openai_model,
             "gemini": settings.gemini_model,

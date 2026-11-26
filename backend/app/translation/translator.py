@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..config import settings
 from ..languages import Language
 from .homophones import get_homophone_cleaning_prompt, get_homophone_translation_prompt
 from .providers import LLMProvider, ProviderError, TokenOverflowError
@@ -292,10 +293,24 @@ Translate every subtitle line below strictly and 100% into {lang.english_name} f
         return self._call(user, TranslateResult, validate)
 
     def extract_global_context(self, raw_transcript: str) -> str:
-        """Step 1: Extract global context under 150 words strictly in technical English."""
+        """Step 1: Extract global context under 150 words strictly in technical English.
+        Optimized for 1m to 45m videos by intelligently sampling across the full duration."""
+        if len(raw_transcript) > 16000:
+            part_len = 5000
+            start_part = raw_transcript[:part_len]
+            mid_idx = len(raw_transcript) // 2
+            mid_part = raw_transcript[mid_idx - part_len // 2 : mid_idx + part_len // 2]
+            end_part = raw_transcript[-part_len:]
+            sample_transcript = (
+                f"{start_part}\n\n... [middle scenes excerpt] ...\n\n"
+                f"{mid_part}\n\n... [ending scenes excerpt] ...\n\n{end_part}"
+            )
+        else:
+            sample_transcript = raw_transcript
+
         user = f"""Below is the raw speech transcript from the video/episode:
 <raw_transcript>
-{raw_transcript[:15000]}
+{sample_transcript}
 </raw_transcript>
 
 Episode notes from editor: {self.episode_notes or "(none)"}
@@ -312,9 +327,13 @@ Summarise the key context in UNDER 150 WORDS strictly in technical English:
         lang: Language,
         source_language: str = "zh",
         global_context: str = "",
-        batch_size: int = 35,
+        batch_size: int | None = None,
     ) -> tuple[dict[int, str], dict[int, str]]:
-        """Steps 2, 3, 4: Chunk into batches of 35, use sliding window previous_context, auto-split retry."""
+        """Steps 2, 3, 4: Chunk into batches of configurable size (default from TRANSLATE_CHUNK_SIZE),
+        use sliding window previous_context, auto-split bisection on overflow."""
+        if batch_size is None or batch_size <= 0:
+            batch_size = int(getattr(settings, "translate_chunk_size", 50))
+
         fixed_src_by_id: dict[int, str] = {}
         trans_by_id: dict[int, str] = {}
 
@@ -358,6 +377,8 @@ Translate every subtitle line in <batch> strictly and 100% into natural {lang.en
 - In 'fixed_src', provide the corrected source text (fixing any misheard homophone/near-homophone errors).
 - In 'trans', provide the target translation.
 - Preserve exact ids for all input items.
+- Return strictly a valid JSON object with key "items" containing the list of translated items:
+{{"items": [{{"id": 1, "fixed_src": "...", "trans": "..."}}]}}
 
 <batch>
 {json.dumps(batch_payload, ensure_ascii=False)}

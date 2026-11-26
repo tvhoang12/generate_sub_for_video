@@ -122,7 +122,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
             lang=lang,
             source_language=detected,
             global_context=global_context,
-            batch_size=35,
+            batch_size=settings.translate_chunk_size,
         )
 
         if not homophone_fixed_source:

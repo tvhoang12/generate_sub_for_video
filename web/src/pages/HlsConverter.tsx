@@ -371,6 +371,25 @@ export function HlsConverterPage() {
   const countDone = jobs.filter((j) => j.status === "done").length;
   const countError = jobs.filter((j) => j.status === "error").length;
 
+  const selectedDoneIds = jobs
+    .filter((j) => selectedJobIds.has(j.id) && j.status === "done")
+    .map((j) => j.id);
+  const selectedDoneCount = selectedDoneIds.length;
+
+  const allFilteredSelected =
+    filteredJobs.length > 0 && filteredJobs.every((j) => selectedJobIds.has(j.id));
+  const handleToggleSelectAllFiltered = () => {
+    setSelectedJobIds((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        filteredJobs.forEach((j) => next.delete(j.id));
+      } else {
+        filteredJobs.forEach((j) => next.add(j.id));
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -669,18 +688,38 @@ export function HlsConverterPage() {
 
         {/* Batch Actions Bar (when selected) */}
         {selectedJobIds.size > 0 && (
-          <div className="flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 p-3">
-            <span className="text-sm font-semibold text-foreground">
-              Đã chọn {selectedJobIds.size} tác vụ
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/30 bg-primary/5 p-3">
             <div className="flex items-center gap-2">
-              <a
-                href={hlsApi.batchDownloadUrl(Array.from(selectedJobIds))}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"
-                download
+              <span className="text-sm font-semibold text-foreground">
+                Đã chọn {selectedJobIds.size} tác vụ
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedJobIds(new Set())}
+                className="text-xs text-muted-foreground hover:text-foreground underline"
               >
-                <Download className="size-3.5" /> Tải ZIP đã chọn
-              </a>
+                Bỏ chọn
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              {selectedDoneCount > 0 ? (
+                <a
+                  href={hlsApi.batchDownloadUrl(selectedDoneIds)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted shadow-xs transition-colors"
+                  download
+                >
+                  <Download className="size-3.5" /> Tải ZIP đã chọn ({selectedDoneCount})
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/50 px-3 py-1.5 text-xs font-semibold text-muted-foreground/60 cursor-not-allowed"
+                  title="Chưa có tác vụ hoàn tất nào trong số tác vụ đã chọn"
+                >
+                  <Download className="size-3.5" /> Tải ZIP đã chọn (0)
+                </button>
+              )}
               <Button
                 variant="danger"
                 className="h-8 px-3 text-xs"
@@ -694,25 +733,38 @@ export function HlsConverterPage() {
 
         {/* Global actions: Download All & Clear All */}
         {jobs.length > 0 && (
-          <div className="flex items-center justify-end gap-3 text-xs">
-            {countDone > 0 && (
-              <a
-                href={hlsApi.batchDownloadUrl(undefined, true)}
-                className="inline-flex items-center gap-1 font-semibold text-primary hover:underline"
-                download
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+            {filteredJobs.length > 0 ? (
+              <label className="flex items-center gap-2 cursor-pointer font-medium text-muted-foreground hover:text-foreground">
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  onChange={handleToggleSelectAllFiltered}
+                  className="size-4 rounded border-slate-300 text-primary focus:ring-primary"
+                />
+                <span>Chọn tất cả ({filteredJobs.length})</span>
+              </label>
+            ) : <div />}
+            <div className="flex items-center gap-3">
+              {countDone > 0 && (
+                <a
+                  href={hlsApi.batchDownloadUrl(undefined, true)}
+                  className="inline-flex items-center gap-1 font-semibold text-primary hover:underline"
+                  download
+                >
+                  <Download className="size-3.5" /> Tải toàn bộ video xong ({countDone})
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={handleDeleteAll}
+                className={`font-semibold transition-colors ${
+                  confirmDeleteAll ? "text-destructive font-bold" : "text-muted-foreground hover:text-destructive"
+                }`}
               >
-                <Download className="size-3.5" /> Tải toàn bộ video xong ({countDone})
-              </a>
-            )}
-            <button
-              type="button"
-              onClick={handleDeleteAll}
-              className={`font-semibold transition-colors ${
-                confirmDeleteAll ? "text-destructive font-bold" : "text-muted-foreground hover:text-destructive"
-              }`}
-            >
-              {confirmDeleteAll ? "Chắc chắn xóa toàn bộ?" : "Xóa tất cả tác vụ"}
-            </button>
+                {confirmDeleteAll ? "Chắc chắn xóa toàn bộ?" : "Xóa tất cả tác vụ"}
+              </button>
+            </div>
           </div>
         )}
 

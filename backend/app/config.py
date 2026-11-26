@@ -79,11 +79,24 @@ class Settings:
         default_factory=lambda: float(os.getenv("FUNASR_VAD_SPEECH_NOISE_THRES", "0.8"))
     )
 
-    # "gemini" | "claude" | "openai" | "mock" (mock is for tests and local UI work only)
-    translator: str = field(default_factory=lambda: os.getenv("TRANSLATOR_PROVIDER", "gemini").lower())
+    # "deepseek" | "gemini" | "claude" | "openai" | "mock" (mock is for tests and local UI work only)
+    translator: str = field(default_factory=lambda: os.getenv("TRANSLATOR_PROVIDER", "deepseek").lower())
+
+    # DeepSeek configuration
+    deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
+    deepseek_base_url: str = field(default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"))
+    deepseek_model: str = field(default_factory=lambda: os.getenv("DEEPSEEK_MODEL", "deepseek-flash"))
+    deepseek_fallback_models: str = field(
+        default_factory=lambda: os.getenv("DEEPSEEK_FALLBACK_MODELS", "deepseek-v4-pro")
+    )
+    translate_chunk_size: int = field(default_factory=lambda: int(os.getenv("TRANSLATE_CHUNK_SIZE", "50")))
+    translate_temperature: float = field(default_factory=lambda: float(os.getenv("TRANSLATE_TEMPERATURE", "0.3")))
+    translate_max_tokens: int = field(default_factory=lambda: int(os.getenv("TRANSLATE_MAX_TOKENS", "8192")))
+
+    # Google Gemini
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     gemini_backup_api_key: str = field(
-        default_factory=lambda: os.getenv("GEMINI_BACKUP_API_KEY", "AQ.Ab8RN6Jyje8P9LoUt0_GAIMigRIOfOXddkP6WO9-1bi1ofISgQ")
+        default_factory=lambda: os.getenv("GEMINI_BACKUP_API_KEY", "")
     )
     gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"))
     gemini_fallback_models: str = field(

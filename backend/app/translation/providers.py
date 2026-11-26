@@ -53,6 +53,240 @@ def _is_transient_error(e: Any) -> bool:
     return "503" in s or "unavailable" in s or "500" in s or "internal" in s or "timeout" in s or "connection" in s
 
 
+class DeepSeekProvider:
+    name = "deepseek"
+    _shared_model_idx: int = 0
+
+    def __init__(self, model: str | None = None) -> None:
+        import os
+        import openai
+
+        api_key = (
+            settings.deepseek_api_key
+            if isinstance(getattr(settings, "deepseek_api_key", None), str)
+            else ""
+        ) or os.getenv("DEEPSEEK_API_KEY", "")
+        if not api_key:
+            raise ProviderError("Chưa cấu hình DEEPSEEK_API_KEY. Vui lòng thêm DEEPSEEK_API_KEY vào file .env")
+
+        base_url = (
+            settings.deepseek_base_url
+            if isinstance(getattr(settings, "deepseek_base_url", None), str)
+            else ""
+        ) or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+
+        base_model = model or getattr(settings, "deepseek_model", None) or "deepseek-flash"
+        raw_fallbacks = getattr(settings, "deepseek_fallback_models", "deepseek-v4-pro")
+        if isinstance(raw_fallbacks, str):
+            fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip()]
+        else:
+            fallback_models = ["deepseek-v4-pro"]
+
+        models = [base_model]
+        for m in fallback_models:
+            if m not in models:
+                models.append(m)
+
+        self._models = models
+        self._current_model_idx = min(DeepSeekProvider._shared_model_idx, len(models) - 1)
+        self._model = self._models[self._current_model_idx]
+        self._temperature = float(getattr(settings, "translate_temperature", 0.3))
+        self._max_tokens = int(getattr(settings, "translate_max_tokens", 8192))
+        self._client = openai.OpenAI(api_key=api_key, base_url=base_url)
+
+    def _advance_to_next_model(self) -> bool:
+        import logging
+        log = logging.getLogger("substudio.providers")
+        if self._current_model_idx + 1 < len(self._models):
+            prev = self._models[self._current_model_idx]
+            self._current_model_idx += 1
+            self._model = self._models[self._current_model_idx]
+            DeepSeekProvider._shared_model_idx = self._current_model_idx
+            log.warning("Tự động fallback từ DeepSeek model '%s' sang '%s'", prev, self._model)
+            return True
+        return False
+
+    def _call_with_retry(
+        self,
+        messages: list[dict[str, str]],
+        response_format: dict | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> Any:
+        import logging
+        import time
+
+        log = logging.getLogger("substudio.providers")
+        total_models = len(self._models)
+        last_exc: Exception | None = None
+
+        for _ in range(total_models):
+            current_model = self._models[self._current_model_idx]
+            self._model = current_model
+
+            params: dict[str, Any] = {
+                "model": current_model,
+                "messages": messages,
+                "temperature": self._temperature if temperature is None else temperature,
+                "max_tokens": self._max_tokens if max_tokens is None else max_tokens,
+            }
+            if response_format:
+                params["response_format"] = response_format
+
+            max_attempts = 3
+            base_delay = 1.5
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = self._client.chat.completions.create(**params)
+                    DeepSeekProvider._shared_model_idx = self._current_model_idx
+                    return resp
+                except Exception as e:
+                    last_exc = e
+                    err_str = str(e).lower()
+                    is_rate_limit = _is_rate_limit_error(e)
+                    is_transient = (
+                        _is_transient_error(e)
+                        or "502" in err_str
+                        or "500" in err_str
+                        or "503" in err_str
+                        or "504" in err_str
+                    )
+
+                    if (is_rate_limit or is_transient) and attempt < max_attempts:
+                        sleep_time = base_delay * (2 ** (attempt - 1))
+                        log.warning(
+                            "DeepSeek model '%s' gặp lỗi tạm thời (lần %d/%d: %s). Thử lại sau %.1fs...",
+                            current_model, attempt, max_attempts, e, sleep_time,
+                        )
+                        time.sleep(sleep_time)
+                        continue
+
+                    log.warning("DeepSeek model '%s' thất bại (%s).", current_model, e)
+                    break
+
+            if not self._advance_to_next_model():
+                break
+
+        raise ProviderError(
+            f"Tất cả models DeepSeek ({', '.join(self._models)}) đều không thể hoàn thành yêu cầu: {last_exc}"
+        ) from last_exc
+
+    def complete(self, system: str, user: str, schema: type[T]) -> T:
+        system_content = f"{system}\nYou must output strictly a valid JSON object matching the requested schema."
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user},
+        ]
+
+        response = self._call_with_retry(
+            messages=messages,
+            response_format={"type": "json_object"},
+        )
+
+        choice = response.choices[0] if (response and response.choices) else None
+        if not choice or not choice.message:
+            raise ProviderError(f"DeepSeek ({self._model}) không trả về nội dung")
+
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason == "length":
+            raise TokenOverflowError(f"Phản hồi của DeepSeek ({self._model}) bị cắt ngắn (max_tokens={self._max_tokens})")
+
+        raw_text = (choice.message.content or "").strip()
+        if not raw_text:
+            raise ProviderError(f"DeepSeek ({self._model}) trả về văn bản rỗng")
+
+        clean_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r"\s*```$", "", clean_text).strip()
+
+        try:
+            return schema.model_validate_json(clean_text)
+        except Exception as e:
+            try:
+                data = json.loads(clean_text)
+                return schema.model_validate(data)
+            except Exception:
+                raise ProviderError(
+                    f"DeepSeek ({self._model}) không trả về JSON đúng schema: {e}\nRaw output: {raw_text[:200]}"
+                ) from e
+
+    def extract_global_context(self, system: str, user: str) -> str:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        response = self._call_with_retry(
+            messages=messages,
+            max_tokens=1024,
+            temperature=0.2,
+        )
+        choice = response.choices[0] if (response and response.choices) else None
+        if not choice or not choice.message:
+            raise ProviderError(f"DeepSeek ({self._model}) không trả về nội dung ngữ cảnh")
+
+        text = (choice.message.content or "").strip()
+        if not text:
+            raise ProviderError(f"DeepSeek ({self._model}) trả về văn bản ngữ cảnh rỗng")
+        return text
+
+    def complete_batch(self, system: str, user: str) -> list[BatchItem]:
+        from pydantic import TypeAdapter
+
+        system_content = (
+            f"{system}\nYou must output strictly a valid JSON object. "
+            f'Format: {{"items": [{{"id": 1, "fixed_src": "...", "trans": "..."}}]}}'
+        )
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user},
+        ]
+
+        response = self._call_with_retry(
+            messages=messages,
+            response_format={"type": "json_object"},
+        )
+
+        choice = response.choices[0] if (response and response.choices) else None
+        if not choice or not choice.message:
+            raise ProviderError(f"DeepSeek ({self._model}) không trả về nội dung batch")
+
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason == "length":
+            raise TokenOverflowError(f"Phản hồi batch của DeepSeek ({self._model}) bị cắt ngắn (max_tokens={self._max_tokens})")
+
+        raw_text = (choice.message.content or "").strip()
+        if not raw_text:
+            raise ProviderError(f"DeepSeek ({self._model}) trả về văn bản batch rỗng")
+
+        clean_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r"\s*```$", "", clean_text).strip()
+
+        try:
+            data = json.loads(clean_text)
+            if isinstance(data, dict) and "items" in data:
+                items_data = data["items"]
+            elif isinstance(data, list):
+                items_data = data
+            elif isinstance(data, dict) and "lines" in data:
+                items_data = data["lines"]
+            else:
+                for v in data.values():
+                    if isinstance(v, list):
+                        items_data = v
+                        break
+                else:
+                    raise ValueError("Không tìm thấy mảng danh sách items trong JSON trả về")
+
+            adapter = TypeAdapter(list[BatchItem])
+            return adapter.validate_python(items_data)
+        except TokenOverflowError:
+            raise
+        except Exception as e:
+            raise ProviderError(
+                f"DeepSeek ({self._model}) không trả về batch JSON hợp lệ: {e}\nRaw output: {raw_text[:200]}"
+            ) from e
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -71,7 +305,7 @@ class GeminiProvider:
 
         backup_key = (
             (settings.gemini_backup_api_key if isinstance(getattr(settings, "gemini_backup_api_key", None), str) else "")
-            or os.getenv("GEMINI_BACKUP_API_KEY", "AQ.Ab8RN6Jyje8P9LoUt0_GAIMigRIOfOXddkP6WO9-1bi1ofISgQ")
+            or os.getenv("GEMINI_BACKUP_API_KEY", "")
         )
 
         keys: list[str] = [primary_key]
@@ -656,6 +890,8 @@ class MockProvider:
 
 def make_provider(name: str | None = None, model: str | None = None) -> LLMProvider:
     name = (name or settings.translator).lower()
+    if name == "deepseek":
+        return DeepSeekProvider(model=model)
     if name == "gemini":
         return GeminiProvider(model=model)
     if name == "claude":
@@ -664,5 +900,5 @@ def make_provider(name: str | None = None, model: str | None = None) -> LLMProvi
         return OpenAIProvider(model=model)
     if name == "mock":
         return MockProvider()
-    raise ValueError(f"TRANSLATOR_PROVIDER không hợp lệ: {name} (gemini | claude | openai | mock)")
+    raise ValueError(f"TRANSLATOR_PROVIDER không hợp lệ: {name} (deepseek | gemini | claude | openai | mock)")
 
