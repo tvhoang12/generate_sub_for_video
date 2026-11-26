@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import settings
+from .fonts import default_fonts_dir
 from .subtitles import Cue, is_non_speech
 
 log = logging.getLogger("substudio.media")
@@ -358,11 +359,7 @@ def _filter_path(path: Path) -> str:
 
 def burn_subtitles(video: Path, ass: Path, out: Path, fonts_dir: Path | None = None) -> None:
     if fonts_dir is None:
-        candidate = Path(__file__).resolve().parents[2] / "assets" / "fonts"
-        if not candidate.exists():
-            candidate = Path(__file__).resolve().parents[2] / "app" / "fonts"
-        if candidate.exists():
-            fonts_dir = candidate
+        fonts_dir = default_fonts_dir()
     ass_path_escaped = _filter_path(ass)
     if fonts_dir:
         fonts_dir_escaped = _filter_path(fonts_dir)

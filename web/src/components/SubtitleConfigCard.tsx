@@ -148,7 +148,11 @@ function getCharWidth(ch: string, fontSize: number, prevCh = ""): number {
   return fontSize * 0.50;
 }
 
-function measureTextWidth(text: string, fontSize: number): number {
+/** Width of a string in video pixels, measured with the real (shaped) font when available. */
+type TextMeasurer = (text: string) => number;
+
+function measureTextWidth(text: string, fontSize: number, measure?: TextMeasurer): number {
+  if (measure) return measure(text);
   let w = 0;
   let prevC = "";
   for (const c of Array.from(text)) {
@@ -185,17 +189,21 @@ function splitTextClusters(text: string): string[] {
   return clusters;
 }
 
-function splitBalancedClusters(text: string, maxWidth: number, fontSize: number): string[] {
+function splitBalancedClusters(text: string, maxWidth: number, fontSize: number, measure?: TextMeasurer): string[] {
   const clusters = splitTextClusters(text);
   if (clusters.length === 0) return [];
   const cWidths: number[] = [];
   let lastC = "";
   for (const cl of clusters) {
     let cw = 0;
-    let prevC = lastC;
-    for (const c of Array.from(cl)) {
-      cw += getCharWidth(c, fontSize, prevC);
-      prevC = c;
+    if (measure) {
+      cw = measure(cl);
+    } else {
+      let prevC = lastC;
+      for (const c of Array.from(cl)) {
+        cw += getCharWidth(c, fontSize, prevC);
+        prevC = c;
+      }
     }
     cWidths.push(cw);
     lastC = cl[cl.length - 1] || "";
@@ -243,7 +251,7 @@ function splitBalancedClusters(text: string, maxWidth: number, fontSize: number)
   return subLines;
 }
 
-export function wrapSampleText(text: string, maxWidth: number, fontSize: number): string[] {
+export function wrapSampleText(text: string, maxWidth: number, fontSize: number, measure?: TextMeasurer): string[] {
   const rawLines = text.replace(/\r\n/g, "\n").replace(/\\N/g, "\n").split("\n");
   const result: string[] = [];
 
@@ -253,35 +261,35 @@ export function wrapSampleText(text: string, maxWidth: number, fontSize: number)
       result.push("");
       continue;
     }
-    const totalW = measureTextWidth(line, fontSize);
+    const totalW = measureTextWidth(line, fontSize, measure);
     if (totalW <= maxWidth * OVERFLOW_TOLERANCE) {
       result.push(line);
       continue;
     }
 
     if (!line.includes(" ")) {
-      result.push(...splitBalancedClusters(line, maxWidth, fontSize));
+      result.push(...splitBalancedClusters(line, maxWidth, fontSize, measure));
       continue;
     }
 
     const words = line.split(" ").filter(Boolean);
     const expandedWords: string[] = [];
     for (const w of words) {
-      const wW = measureTextWidth(w, fontSize);
+      const wW = measureTextWidth(w, fontSize, measure);
       if (wW > maxWidth * OVERFLOW_TOLERANCE) {
-        expandedWords.push(...splitBalancedClusters(w, maxWidth, fontSize));
+        expandedWords.push(...splitBalancedClusters(w, maxWidth, fontSize, measure));
       } else {
         expandedWords.push(w);
       }
     }
 
-    const spaceW = getCharWidth(" ", fontSize);
+    const spaceW = measure ? measure(" ") : getCharWidth(" ", fontSize);
     const lines: string[] = [];
     let curLine: string[] = [];
     let curW = 0;
 
     for (const word of expandedWords) {
-      const wordW = measureTextWidth(word, fontSize);
+      const wordW = measureTextWidth(word, fontSize, measure);
       const addedW = curLine.length === 0 ? wordW : spaceW + wordW;
       if (curLine.length > 0 && curW + addedW > maxWidth * OVERFLOW_TOLERANCE) {
         lines.push(curLine.join(" "));
@@ -302,7 +310,7 @@ export function wrapSampleText(text: string, maxWidth: number, fontSize: number)
       const prevLineWords = lines[lines.length - 2].split(" ");
       if (lastLineWords.length === 1 && prevLineWords.length >= 2) {
         const candidateLast = prevLineWords[prevLineWords.length - 1] + " " + lines[lines.length - 1];
-        if (measureTextWidth(candidateLast, fontSize) <= maxWidth * OVERFLOW_TOLERANCE) {
+        if (measureTextWidth(candidateLast, fontSize, measure) <= maxWidth * OVERFLOW_TOLERANCE) {
           lines[lines.length - 2] = prevLineWords.slice(0, -1).join(" ");
           lines[lines.length - 1] = candidateLast;
         }
@@ -361,7 +369,7 @@ const COLOR_PRESETS = [
 
 const FONT_OPTIONS = [
   { label: "Tự động tối ưu theo ngôn ngữ (Khuyên dùng)", value: "" },
-  { label: "Phetsarath OT (Chuẩn tiếng Lào)", value: "Phetsarath OT" },
+  { label: "Phetsarath OT (Chuẩn tiếng Lào)", value: "Phetsarath" },
   { label: "Kantumruy Pro (Chuẩn tiếng Khmer)", value: "Kantumruy Pro" },
   { label: "Noto Sans (Đa ngôn ngữ)", value: "Noto Sans" },
   { label: "Arial", value: "Arial" },
@@ -611,13 +619,19 @@ export function SubtitleConfigCard({
 
   const previewFontFamily = (() => {
     if (cfg.font && cfg.font !== "__custom__") {
-      return `"${cfg.font}", var(--font-sans)`;
+      // Same aliases as the backend (subtitles.FONT_ALIASES); the web font is "Phetsarath"
+      const alias: Record<string, string> = {
+        "phetsarath ot": "Phetsarath",
+        kantumruy: "Kantumruy Pro",
+      };
+      const family = alias[cfg.font.trim().toLowerCase()] ?? cfg.font;
+      return `"${family}", var(--font-sans)`;
     }
     switch (sampleLang) {
       case "km":
-        return '"Kantumruy Pro", "Noto Sans Khmer", "Leelawadee UI", var(--font-sans)';
+        return '"Kantumruy Pro", "Noto Sans Khmer", var(--font-sans)';
       case "lo":
-        return '"Phetsarath OT", "Phetsarath", "Noto Sans Lao", "Leelawadee UI", var(--font-sans)';
+        return '"Phetsarath", "Noto Sans Lao", var(--font-sans)';
       case "th":
         return '"Noto Sans Thai", "Leelawadee UI", var(--font-sans)';
       case "zh":
@@ -648,16 +662,14 @@ export function SubtitleConfigCard({
     return () => observer.disconnect();
   }, [videoDimensions, previewAspectRatio]);
 
+  // Width is capped so the 520px height limit is never hit: a clipped height would break the
+  // aspect ratio, letterbox the video and misplace the %-positioned subtitle.
   const containerAspectRatioStyle = {
     aspectRatio: `${refVideoWidth} / ${refVideoHeight}`,
-    maxWidth: isVertical
-      ? `${Math.max(260, Math.min(380, Math.round(520 * (refVideoWidth / refVideoHeight))))}px`
-      : "640px",
+    maxWidth: `${Math.floor(Math.min(isVertical ? 380 : 640, 520 * (refVideoWidth / refVideoHeight)))}px`,
   };
 
-  const containerMaxWidthClass = videoDimensions
-    ? "w-full max-h-[520px]"
-    : "w-full";
+  const containerMaxWidthClass = "w-full";
 
   const previewScale =
     containerSize.width > 0 &&
@@ -690,13 +702,49 @@ export function SubtitleConfigCard({
 
   // Available canvas width for subtitle text wrapping matching ASS render
   const availableCanvasWidth = Math.max(50, refVideoWidth - effectiveMarginL - effectiveMarginR);
-  const wrappedLines = useMemo(() => {
-    return wrapSampleText(currentSample, availableCanvasWidth, cfg.font_size);
-  }, [currentSample, availableCanvasWidth, cfg.font_size]);
+  // Re-measure once web fonts finish loading, otherwise the fallback font's widths are used.
+  const [fontsVersion, setFontsVersion] = useState(0);
+  const canvasFont = `${cfg.italic ? "italic " : ""}${cfg.bold ? 700 : 400} ${cfg.font_size}px ${previewFontFamily.replace(
+    /var\([^)]*\)/g,
+    "sans-serif"
+  )}`;
+  useEffect(() => {
+    const fonts = document.fonts;
+    if (!fonts) return;
+    let alive = true;
+    const bump = () => alive && setFontsVersion((v) => v + 1);
+    fonts.load(canvasFont, currentSample).then(bump, () => {});
+    fonts.addEventListener?.("loadingdone", bump);
+    return () => {
+      alive = false;
+      fonts.removeEventListener?.("loadingdone", bump);
+    };
+  }, [canvasFont, currentSample]);
 
-  // Scaled outline, shadow, and blur matching libass ScaledBorderAndShadow
+  const measureText = useMemo<TextMeasurer | undefined>(() => {
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (!ctx) return undefined;
+    ctx.font = canvasFont;
+    const cache = new Map<string, number>();
+    return (text: string) => {
+      let w = cache.get(text);
+      if (w === undefined) {
+        w = ctx.measureText(text).width;
+        cache.set(text, w);
+      }
+      return w;
+    };
+  }, [canvasFont, fontsVersion]);
+
+  const wrappedLines = useMemo(() => {
+    return wrapSampleText(currentSample, availableCanvasWidth, cfg.font_size, measureText).filter((l) => l.trim());
+  }, [currentSample, availableCanvasWidth, cfg.font_size, measureText]);
+
+  // Scaled outline, shadow, and blur matching libass ScaledBorderAndShadow.
+  // -webkit-text-stroke is centred on the glyph edge and paint-order hides the inner half,
+  // so the stroke must be twice the libass Outline to show the same width outside the glyph.
   const scaledOutlinePx = cfg.has_border
-    ? Math.max(0.75, (cfg.outline ?? 3.0) * previewScale)
+    ? Math.max(1.5, 2 * (cfg.outline ?? 3.0) * previewScale)
     : 0;
   const scaledShadowPx = cfg.has_shadow
     ? Math.max(0.5, (cfg.shadow ?? 1.5) * previewScale)
@@ -706,8 +754,9 @@ export function SubtitleConfigCard({
   const previewTextShadow = (() => {
     const parts: string[] = [];
     if (cfg.has_shadow && scaledShadowPx > 0) {
+      // libass: hard-edged copy offset by Shadow px, BackColour alpha &H80 (50%)
       parts.push(
-        `${scaledShadowPx.toFixed(1)}px ${scaledShadowPx.toFixed(1)}px ${(scaledShadowPx * 1.5).toFixed(1)}px ${cfg.color_shadow || "#000000"}`
+        `${scaledShadowPx.toFixed(1)}px ${scaledShadowPx.toFixed(1)}px 0 ${hexToRgba(cfg.color_shadow || "#000000", 0.5)}`
       );
     }
     return parts.length > 0 ? parts.join(", ") : "none";
@@ -1917,6 +1966,7 @@ export function SubtitleConfigCard({
                                   fontFamily: previewFontFamily,
                                   fontSize: `${renderedFontSize}px`,
                                   lineHeight: 1.3,
+                                  whiteSpace: "nowrap",
                                   color: cfg.color,
                                   fontWeight: cfg.bold ? 700 : 400,
                                   fontStyle: cfg.italic ? "italic" : "normal",
@@ -1937,14 +1987,14 @@ export function SubtitleConfigCard({
                             {cfg.mask_enabled && (
                               <span
                                 aria-hidden
-                                className={`absolute inset-0 pointer-events-none transition-all ${
-                                  cfg.mask_shape === "pill"
-                                    ? "rounded-full"
-                                    : cfg.mask_shape === "rounded"
-                                    ? "rounded-xl"
-                                    : "rounded-none"
-                                }`}
+                                className="absolute inset-0 pointer-events-none transition-all"
                                 style={{
+                                  borderRadius:
+                                    cfg.mask_shape === "pill"
+                                      ? "9999px"
+                                      : cfg.mask_shape === "rounded"
+                                      ? `${Math.max(4, Math.round(renderedFontSize * 0.28))}px`
+                                      : "0px",
                                   backgroundColor: maskBgColor,
                                   backdropFilter: scaledMaskBlurPx > 0 ? `blur(${scaledMaskBlurPx}px)` : "none",
                                   WebkitBackdropFilter: scaledMaskBlurPx > 0 ? `blur(${scaledMaskBlurPx}px)` : "none",
@@ -1970,6 +2020,7 @@ export function SubtitleConfigCard({
                                     fontFamily: previewFontFamily,
                                     fontSize: `${renderedFontSize}px`,
                                     lineHeight: 1.3,
+                                    whiteSpace: "nowrap",
                                     color: cfg.color,
                                     fontWeight: cfg.bold ? 700 : 400,
                                     fontStyle: cfg.italic ? "italic" : "normal",

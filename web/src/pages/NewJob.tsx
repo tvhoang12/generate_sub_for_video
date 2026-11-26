@@ -36,11 +36,8 @@ function loadLastSubtitleConfig(): SubtitleConfig {
     if (parsed.margin_r && parsed.margin_r <= 25) {
       parsed.margin_r = 50;
     }
-    if (parsed.outline && parsed.outline < 2.0) {
-      parsed.outline = 3.0;
-    }
-    if (parsed.shadow && parsed.shadow < 1.0) {
-      parsed.shadow = 1.5;
+    if (parsed.font === "Phetsarath OT") {
+      parsed.font = "Phetsarath";
     }
     return { ...DEFAULT_SUBTITLE_CONFIG, ...parsed };
   } catch {

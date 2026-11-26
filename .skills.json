@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "ffmpeg-skill-ffmpeg-skill": {
+      "version": "1.0.23",
+      "installedAt": "2026-11-26T02:29:14.024Z",
+      "platform": "claude-code"
+    }
+  }
+}

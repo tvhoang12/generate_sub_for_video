@@ -1,4 +1,22 @@
+import re
+
 from app.pipeline.subtitles import Cue, is_non_speech, parse_srt, tighten_timing, to_srt
+
+_POS_RE = re.compile(r"\\pos\(([-\d.]+),([-\d.]+)\)")
+
+
+def _default_texts(ass: str) -> list[str]:
+    """Text of every layer-1 (Default) event, override block stripped."""
+    return [l.split(",,", 1)[1].split("}", 1)[1] for l in ass.splitlines() if l.startswith("Dialogue: 1,")]
+
+
+def _positions(ass: str) -> list[tuple[float, float]]:
+    out = []
+    for l in ass.splitlines():
+        if l.startswith("Dialogue: 1,"):
+            m = _POS_RE.search(l)
+            out.append((float(m.group(1)), float(m.group(2))))
+    return out
 
 
 def test_srt_round_trip_keeps_multiline_text():
@@ -43,8 +61,9 @@ def test_ass_events_keep_line_breaks_and_escape_override_braces():
     from app.pipeline.subtitles import to_ass
 
     ass = to_ass([Cue(1, 61_230, 3_723_450, "ព្រមទាំង {x}\nline two")], "Noto Sans Khmer")
-    assert "Style: Default,Noto Sans Khmer,110," in ass
-    assert r"Dialogue: 1,0:01:01.23,1:02:03.45,Default,,0,0,0,,ព្រមទាំង \{x\}\Nline two" in ass
+    texts = _default_texts(ass)
+    assert texts == [r"ព្រមទាំង \{x\}", "line two"]
+    assert "Dialogue: 1,0:01:01.23,1:02:03.45,Default," in ass
 
 
 def test_ass_border_and_shadow_configs():
@@ -77,7 +96,8 @@ def test_ass_mask_configs():
 
     # Default has backdrop with blur10 and Dialogue 0
     ass_default = to_ass(cues, "Arial")
-    assert r"Dialogue: 0,0:00:01.00,0:00:02.00,Backdrop,,0,0,0,,{\blur10}Sample" in ass_default
+    assert "Dialogue: 0,0:00:01.00,0:00:02.00,Backdrop,,0,0,0,,{" in ass_default
+    assert r"\blur10\xbord24" in ass_default
 
     # Disabling mask removes Backdrop Dialogue
     ass_disabled = to_ass(cues, "Arial", {"mask_enabled": False})
@@ -91,19 +111,19 @@ def test_ass_mask_configs():
         "mask_blur": 20,
         "mask_shape": "rectangle",
     })
-    assert r"Dialogue: 0,0:00:01.00,0:00:02.00,Backdrop,,0,0,0,,{\blur20}Sample" in ass_custom
+    assert r"\blur20" in ass_custom and ass_custom.rstrip().splitlines()[-2].endswith("}Sample")
     # BorderStyle 3 for rectangle
     assert ",3," in ass_custom
 
     # Mask by text aligns to text with Backdrop style
     ass_by_text = to_ass(cues, "Arial", {"mask_by_text": True})
-    assert r"Dialogue: 0,0:00:01.00,0:00:02.00,Backdrop,,0,0,0,,{\blur10}Sample" in ass_by_text
+    assert "Dialogue: 0,0:00:01.00,0:00:02.00,Backdrop,," in ass_by_text
 
     # Fixed box for all subs (mask_by_text = False) generates BackdropFixed vector drawing
     ass_fixed = to_ass(cues, "Arial", {"mask_by_text": False})
     assert "Style: BackdropFixed," in ass_fixed
-    assert r"Dialogue: 0,0:00:01.00,0:00:02.00,BackdropFixed,,0,0,0,,{\pos(" in ass_fixed
-    assert r"\p1}m 0 0 l " in ass_fixed
+    assert r"Dialogue: 0,0:00:01.00,0:00:02.00,BackdropFixed,,0,0,0,,{\an7\pos(" in ass_fixed
+    assert r"\p1}m " in ass_fixed
 
 
 def test_to_ass_aspect_ratio_resolution():
@@ -173,17 +193,18 @@ def test_ass_margins_standard():
 
     cues = [Cue(1, 1000, 2000, "Sample")]
 
-    # Default margins are margin_l=50, margin_r=50, ass_margin_v=38 (bottom-aligned with Alignment=2)
+    # Defaults match the web preview: margin_l=50, margin_r=50, margin_v=50
     ass_default = to_ass(cues, "Arial")
-    assert ",1,3.0,1.5,2,50,50,38,1" in ass_default
+    assert ",1,3.0,1.5,2,50,50,50,1" in ass_default
 
     # User margin_r = 0 -> exact margin_r is 0
     ass_zero = to_ass(cues, "Arial", {"margin_r": 0})
-    assert ",1,3.0,1.5,2,50,0,38,1" in ass_zero
+    assert ",1,3.0,1.5,2,50,0,50,1" in ass_zero
 
-    # User margin_r = 20 -> exact margin_r is 20
+    # User margin_r = 20 -> exact margin_r is 20, and the text is centred between the margins
     ass_custom = to_ass(cues, "Arial", {"margin_r": 20})
-    assert ",1,3.0,1.5,2,50,20,38,1" in ass_custom
+    assert ",1,3.0,1.5,2,50,20,50,1" in ass_custom
+    assert _positions(ass_custom)[0][0] == (50 + 1920 - 20) / 2
 
 
 def test_auto_line_wrap_based_on_frame_size_and_margins():
@@ -194,27 +215,18 @@ def test_auto_line_wrap_based_on_frame_size_and_margins():
 
     # In 9:16 portrait video (width 1080, height 1920), available width is 1080 - 50 - 50 = 980
     ass_portrait = to_ass(cues, "Arial", video_width=1080, video_height=1920)
-    for line in ass_portrait.splitlines():
-        if line.startswith("Dialogue: 1,"):
-            # Must auto-wrap into multiple lines with \N
-            assert r"\N" in line
-            parts = line.split(",,", 1)[1].split(r"\N")
-            assert len(parts) >= 3
+    portrait_lines = _default_texts(ass_portrait)
+    assert len(portrait_lines) >= 3
 
     # In 16:9 landscape video (width 1920, height 1080), lines wrap with wider threshold
     ass_landscape = to_ass(cues, "Arial", video_width=1920, video_height=1080)
-    for line in ass_landscape.splitlines():
-        if line.startswith("Dialogue: 1,"):
-            assert r"\N" in line
-            parts = line.split(",,", 1)[1].split(r"\N")
-            assert len(parts) < len(ass_portrait.split(r"\N"))
+    landscape_lines = _default_texts(ass_landscape)
+    assert 2 <= len(landscape_lines) < len(portrait_lines)
 
     # Test auto-wrap on scripts without spaces (Khmer)
     km_text = "ឥឡូវព្រះអធិរាជចង់ឱ្យលោកតាសរសេរថ្កោលទោសអតីតអធិរាជ"
     ass_km_portrait = to_ass([Cue(1, 1000, 2000, km_text)], "Noto Sans Khmer", video_width=1080, video_height=1920)
-    for line in ass_km_portrait.splitlines():
-        if line.startswith("Dialogue: 1,"):
-            assert r"\N" in line
+    assert len(_default_texts(ass_km_portrait)) >= 2
 
 
 def test_ass_line_spacing_and_mask_padding():
@@ -222,26 +234,33 @@ def test_ass_line_spacing_and_mask_padding():
 
     cues = [Cue(1, 1000, 3000, "First line\nSecond line")]
 
-    # Default (no line spacing specified) uses simple \N
+    # Each wrapped line is its own event, one line pitch apart:
+    # pitch = 1.3 * font_size + 2 * mask padding y (0.45 * padding x) + line_spacing
     ass_std = to_ass(cues, "Arial")
-    assert r"Dialogue: 1,0:00:01.00,0:00:03.00,Default,,0,0,0,,First line\NSecond line" in ass_std
+    assert _default_texts(ass_std) == ["First line", "Second line"]
+    (_, y_top), (_, y_bottom) = _positions(ass_std)
+    assert abs((y_bottom - y_top) - (1.3 * 50 + 2 * 24 * 0.45 + 12)) < 0.02
     # Default mask padding x is 24, so Backdrop outline is 24 with Alignment=2
     assert ",3,24,0,2," in ass_std
 
     # Custom line_spacing=18 and mask_padding_x=32
     ass_custom = to_ass(cues, "Arial", {"line_spacing": 18, "mask_padding_x": 32})
-    # Spacer tag expands line spacing by 18px without visible artifacts
-    assert r"Dialogue: 1,0:00:01.00,0:00:03.00,Default,,0,0,0,,First line\N{\fs18\alpha&HFF&}\h\N{\fs61\alpha&H00&}Second line" in ass_custom
-    assert r"Dialogue: 0,0:00:01.00,0:00:03.00,Backdrop,,0,0,0,,{\blur10}First line\N{\fs18\alpha&HFF&}\h\N{\fs61\1a&HFF&\3a&H99&\4a&H99&}Second line" in ass_custom
+    (_, y_top), (_, y_bottom) = _positions(ass_custom)
+    assert abs((y_bottom - y_top) - (1.3 * 50 + 2 * 32 * 0.45 + 18)) < 0.02
+    assert r"\xbord32" in ass_custom
     # Backdrop outline equals mask_padding_x = 32 with Alignment=2
     assert ",3,32,0,2," in ass_custom
+    # line_spacing 0 is honoured, not replaced by the default
+    ass_zero = to_ass(cues, "Arial", {"line_spacing": 0, "mask_enabled": False})
+    (_, y_top), (_, y_bottom) = _positions(ass_zero)
+    assert abs((y_bottom - y_top) - 1.3 * 50) < 0.02
 
     # Custom line_spacing and mask_padding_x in fixed box mode (mask_by_text = False)
     ass_fixed = to_ass(cues, "Arial", {"line_spacing": 20, "mask_padding_x": 30, "mask_by_text": False})
     # x1 = margin_l - mask_padding_x = 50 - 30 = 20
     # x2 = 1920 - 50 + 30 = 1900 -> w = 1880
-    assert r"\pos(20," in ass_fixed
-    assert "m 0 0 l 1880 0" in ass_fixed
+    assert r"\an7\pos(20," in ass_fixed
+    assert " 1880 " in ass_fixed  # pill drawing spans the full 1880 px width
 
 
 def test_lao_and_thai_zero_width_marks_prevent_premature_wrapping():
@@ -255,10 +274,8 @@ def test_lao_and_thai_zero_width_marks_prevent_premature_wrapping():
     assert wrapped[0] == lao_line
 
     ass = to_ass([Cue(1, 1000, 2000, lao_line)], "Phetsarath", {"margin_l": 0, "margin_r": 0}, video_width=720, video_height=1280)
-    for line in ass.splitlines():
-        if line.startswith("Dialogue: 1,"):
-            # Must NOT wrap onto 2 lines
-            assert r"\N" not in line
+    # Must NOT wrap onto 2 lines
+    assert _default_texts(ass) == [lao_line]
 
 
 def test_prevowels_stay_with_base_consonants():
@@ -300,16 +317,54 @@ def test_multiline_subtitles_expand_upward_anchored_at_bottom():
     ]
     ass = to_ass(cues, "Arial", {"margin_v": 60}, video_width=720, video_height=1280)
 
-    # Styles must use bottom-center alignment (Alignment=2) with MarginV anchored to bottom margin
-    assert ",1,3.0,1.5,2,50,50,58,1" in ass
-    assert "Style: Backdrop,Arial,61,&HFF000000,&H000000FF,&H99000000,&H99000000,1,0,0,0,100,100,0,0,3,24,0,2,50,50,58,1" in ass
+    # Bottom-center alignment; the bottom line sits at the same place for 1 and 2 line cues
+    assert ",1,3.0,1.5,2,50,50,60,1" in ass
+    pos = _positions(ass)
+    assert len(pos) == 3
+    single, two_top, two_bottom = pos
+    assert single == two_bottom
+    assert two_top[1] < two_bottom[1]
 
 
+def test_font_metrics_are_read_from_the_bundled_font_files():
+    from app.pipeline.fonts import default_fonts_dir, font_metrics
+
+    m = font_metrics("Kantumruy Pro", bold=True, fonts_dir=default_fonts_dir())
+    assert m.path.endswith("KantumruyPro-Bold.ttf")
+    # usWinAscent 1020 + usWinDescent 468 over 1000 units per em
+    assert abs(m.libass_scale - 1.488) < 1e-6
+    assert abs(m.css_descent_ratio - 0.26) < 1e-6
 
 
+def test_ass_fontsize_maps_css_em_to_libass_size():
+    from app.pipeline.subtitles import to_ass
+
+    ass = to_ass([Cue(1, 0, 1000, "ព្រមទាំង")], "Kantumruy Pro", {"font_size": 50}, 1920, 1080)
+    # libass sizes by win ascent+descent: 50 px em needs Fontsize 50 * 1.488
+    assert "Style: Default,Kantumruy Pro,74.4," in ass
 
 
+def test_bottom_line_baseline_matches_the_css_preview():
+    from app.pipeline.subtitles import to_ass
+
+    # Kantumruy Pro: CSS ascent/descent 0.92/0.26 (USE_TYPO_METRICS), libass descent 0.468
+    ass = to_ass([Cue(1, 0, 1000, "ព្រមទាំង")], "Kantumruy Pro",
+                 {"font_size": 50, "margin_v": 50, "mask_enabled": False}, 1920, 1080)
+    css_baseline = 50 + ((1.3 - 1.18) / 2 + 0.26) * 50  # px above the bottom edge
+    (_, y), = _positions(ass)
+    assert abs(y - (1080 - (css_baseline - 0.468 * 50))) < 0.02
 
 
+def test_zero_values_are_not_replaced_by_defaults():
+    from app.pipeline.subtitles import to_ass
+
+    ass = to_ass([Cue(1, 0, 1000, "x")], "Arial", {"outline": 0, "shadow": 0})
+    assert ",1,0.0,0.0,2," in ass
 
 
+def test_phetsarath_ot_alias_uses_bundled_phetsarath():
+    from app.pipeline.subtitles import to_ass
+
+    ass = to_ass([Cue(1, 0, 1000, "ສະບາຍດີ")], "Noto Sans", {"font": "Phetsarath OT", "font_size": 50})
+    # Phetsarath: (2123 + 857) / 2048 = 1.455
+    assert "Style: Default,Phetsarath,72.75," in ass

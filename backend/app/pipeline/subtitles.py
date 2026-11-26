@@ -6,6 +6,8 @@ import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from .fonts import default_fonts_dir, font_metrics, glyph_advances
+
 MIN_CUE_MS = 800
 TRIM_SLACK_MS = 600
 
@@ -137,10 +139,15 @@ def is_dependent_mark(ch: str) -> bool:
     return False
 
 
-def char_width(ch: str, font_size: float, prev_ch: str = "") -> float:
+Advances = dict[int, float] | None  # code point -> advance in em, read from the font file
+
+
+def char_width(ch: str, font_size: float, prev_ch: str = "", advances: Advances = None) -> float:
     if is_zero_width_mark(ch, prev_ch):
         return 0.0
     code = ord(ch)
+    if advances and code in advances:
+        return advances[code] * font_size
     if 0x1780 <= code <= 0x17FF:
         return font_size * 0.58
     w = unicodedata.east_asian_width(ch)
@@ -159,12 +166,12 @@ def char_width(ch: str, font_size: float, prev_ch: str = "") -> float:
     return font_size * 0.50
 
 
-def measure_text_width(text: str, font_size: float) -> float:
+def measure_text_width(text: str, font_size: float, advances: Advances = None) -> float:
     """Measure total advance width of text using char_width."""
     total_w = 0.0
     prev_c = ""
     for c in text:
-        total_w += char_width(c, font_size, prev_c)
+        total_w += char_width(c, font_size, prev_c, advances)
         prev_c = c
     return total_w
 
@@ -195,7 +202,7 @@ def split_clusters(text: str) -> list[str]:
     return clusters
 
 
-def split_balanced_clusters(text: str, max_width: float, font_size: float) -> list[str]:
+def split_balanced_clusters(text: str, max_width: float, font_size: float, advances: Advances = None) -> list[str]:
     """Split a text without spaces into visually balanced lines, avoiding tiny orphan fragments."""
     clusters = split_clusters(text)
     if not clusters:
@@ -206,7 +213,7 @@ def split_balanced_clusters(text: str, max_width: float, font_size: float) -> li
         cw = 0.0
         prev_c = last_c
         for c in cl:
-            cw += char_width(c, font_size, prev_c)
+            cw += char_width(c, font_size, prev_c, advances)
             prev_c = c
         c_widths.append(cw)
         last_c = cl[-1] if cl else ""
@@ -245,34 +252,34 @@ def split_balanced_clusters(text: str, max_width: float, font_size: float) -> li
     return sub_lines
 
 
-def wrap_single_line(line: str, max_width: float, font_size: float) -> list[str]:
+def wrap_single_line(line: str, max_width: float, font_size: float, advances: Advances = None) -> list[str]:
     """Wrap a single line of text to fit within max_width with overflow tolerance and orphan prevention."""
     line = line.strip()
     if not line:
         return []
-    total_w = measure_text_width(line, font_size)
+    total_w = measure_text_width(line, font_size, advances)
     if total_w <= max_width * OVERFLOW_TOLERANCE:
         return [line]
 
     if " " not in line:
-        return split_balanced_clusters(line, max_width, font_size)
+        return split_balanced_clusters(line, max_width, font_size, advances)
 
     words = [w for w in line.split(" ") if w]
     expanded_words: list[str] = []
     for w in words:
-        w_w = measure_text_width(w, font_size)
+        w_w = measure_text_width(w, font_size, advances)
         if w_w > max_width * OVERFLOW_TOLERANCE:
-            expanded_words.extend(split_balanced_clusters(w, max_width, font_size))
+            expanded_words.extend(split_balanced_clusters(w, max_width, font_size, advances))
         else:
             expanded_words.append(w)
 
-    space_w = char_width(" ", font_size)
+    space_w = char_width(" ", font_size, "", advances)
     lines: list[str] = []
     cur_line: list[str] = []
     cur_w = 0.0
 
     for word in expanded_words:
-        word_w = measure_text_width(word, font_size)
+        word_w = measure_text_width(word, font_size, advances)
         added_w = word_w if not cur_line else space_w + word_w
         if cur_line and (cur_w + added_w > max_width * OVERFLOW_TOLERANCE):
             lines.append(" ".join(cur_line))
@@ -292,19 +299,19 @@ def wrap_single_line(line: str, max_width: float, font_size: float) -> list[str]
         prev_line_words = lines[-2].split(" ")
         if len(last_line_words) == 1 and len(prev_line_words) >= 2:
             candidate_last = prev_line_words[-1] + " " + lines[-1]
-            if measure_text_width(candidate_last, font_size) <= max_width * OVERFLOW_TOLERANCE:
+            if measure_text_width(candidate_last, font_size, advances) <= max_width * OVERFLOW_TOLERANCE:
                 lines[-2] = " ".join(prev_line_words[:-1])
                 lines[-1] = candidate_last
 
     return lines
 
 
-def wrap_text_for_ass(text: str, max_width: float, font_size: float) -> list[str]:
+def wrap_text_for_ass(text: str, max_width: float, font_size: float, advances: Advances = None) -> list[str]:
     """Wrap cue text to fit max_width in ASS canvas coordinates, returning list of lines."""
     raw_lines = text.replace("\r\n", "\n").replace(r"\N", "\n").split("\n")
     result_lines: list[str] = []
     for l in raw_lines:
-        wrapped = wrap_single_line(l, max_width, font_size)
+        wrapped = wrap_single_line(l, max_width, font_size, advances)
         if wrapped:
             result_lines.extend(wrapped)
         else:
@@ -312,42 +319,57 @@ def wrap_text_for_ass(text: str, max_width: float, font_size: float) -> list[str
     return result_lines
 
 
-FONT_METRIC_FALLBACK = {
-    "Kantumruy Pro": (2.15, 0.22),
-    "Noto Sans Khmer": (2.20, 0.25),
-    "Khmer OS": (2.35, 0.28),
+# Layout constants shared with the web preview (web/src/components/SubtitleConfigCard.tsx).
+PREVIEW_LINE_HEIGHT = 1.3  # CSS line-height of each subtitle line, in em
+MASK_PAD_Y_RATIO = 0.45  # vertical mask padding = mask_padding_x * 0.45
+ROUNDED_RADIUS_RATIO = 0.28  # "rounded" mask corner radius, in em
+
+FONT_ALIASES: dict[str, str] = {
+    "phetsarath ot": "Phetsarath",
+    "phetsarath": "Phetsarath",
+    "kantumruy": "Kantumruy Pro",
+    "kantumruy pro": "Kantumruy Pro",
 }
 
 
-def get_ass_font_metrics(font_name: str, fonts_dir: Path | None = None) -> tuple[float, float]:
-    """
-    Trả về (scale_factor, extra_descent_ratio):
-    - scale_factor = (usWinAscent + usWinDescent) / unitsPerEm
-    - extra_descent_ratio = max(0, (usWinDescent - abs(sTypoDescender)) / unitsPerEm)
-    """
-    if fonts_dir and fonts_dir.exists():
-        try:
-            from fontTools.ttLib import TTFont
-            for ttf_path in fonts_dir.glob("*.[to]tf"):
-                font = TTFont(str(ttf_path))
-                family_names = [
-                    rec.toUnicode()
-                    for rec in font["name"].names
-                    if rec.nameID in (1, 4, 16)
-                ]
-                if any(font_name.lower() == n.lower() for n in family_names) and "Regular" in "".join(family_names):
-                    upem = float(font["head"].unitsPerEm)
-                    os2 = font["OS/2"]
-                    win_ascent = float(os2.usWinAscent)
-                    win_descent = float(os2.usWinDescent)
-                    typo_descent = abs(float(getattr(os2, "sTypoDescender", font["hhea"].descent)))
-                    if win_ascent + win_descent > 0 and upem > 0:
-                        scale = (win_ascent + win_descent) / upem
-                        extra_desc = max(0.0, (win_descent - typo_descent) / upem)
-                        return (scale, extra_desc)
-        except Exception:
-            pass
-    return FONT_METRIC_FALLBACK.get(font_name, (1.22, 0.05))
+def _cfg_num(cfg: dict, key: str, default: float) -> float:
+    """Config number; 0 is a valid value, only missing/invalid values fall back to the default."""
+    v = cfg.get(key)
+    if v is None or v == "":
+        return float(default)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    return f if math.isfinite(f) else float(default)
+
+
+def _cfg_flag(cfg: dict, key: str, default: bool) -> bool:
+    v = cfg.get(key, default)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "0", "no", "off", "")
+    return bool(v) if v is not None else default
+
+
+def _fmt(x: float) -> str:
+    """Compact number for ASS fields: 2 decimals, no trailing zeros."""
+    s = f"{x:.2f}".rstrip("0").rstrip(".")
+    return s if s not in ("", "-0") else "0"
+
+
+def _rounded_rect(w: float, h: float, r: float) -> str:
+    """ASS vector drawing of a w x h rectangle with corner radius r, origin top-left."""
+    r = max(0.0, min(r, w / 2, h / 2))
+    if r < 0.5:
+        return f"m 0 0 l {_fmt(w)} 0 l {_fmt(w)} {_fmt(h)} l 0 {_fmt(h)}"
+    k = r * 0.5523
+    f = _fmt
+    return (
+        f"m {f(r)} 0 l {f(w - r)} 0 b {f(w - r + k)} 0 {f(w)} {f(r - k)} {f(w)} {f(r)} "
+        f"l {f(w)} {f(h - r)} b {f(w)} {f(h - r + k)} {f(w - r + k)} {f(h)} {f(w - r)} {f(h)} "
+        f"l {f(r)} {f(h)} b {f(r - k)} {f(h)} 0 {f(h - r + k)} 0 {f(h - r)} "
+        f"l 0 {f(r)} b 0 {f(r - k)} {f(r - k)} 0 {f(r)} 0"
+    )
 
 
 def to_ass(
@@ -358,167 +380,161 @@ def to_ass(
     video_height: int | None = None,
     fonts_dir: Path | None = None,
 ) -> str:
-    """ASS script for burning styled subtitles matching exact video dimensions.
+    """ASS script that renders the subtitle exactly where the web preview draws it.
 
-    Uses the actual video resolution (PlayResX = video_width, PlayResY = video_height)
-    so subtitle font size, margins, outline, and shadow units correspond 1:1 to video pixels
-    and perfectly match the frontend live preview without scaling distortion.
+    PlayRes equals the video resolution, so every config value is in video pixels.
 
-    Burning ASS through ffmpeg's `ass` filter allows complex text shaping (critical for
-    Khmer clusters, Lao tones, Myanmar subjoined consonants).
-    Layer 0 (Backdrop) creates a softly blurred, semi-transparent mask behind the subtitle.
-    Layer 1 (Default) renders customizable text with sharp stroke and shadow.
+    The preview is HTML: `font-size` is the em, each line is a `line-height: 1.3` box,
+    lines are stacked with `line_spacing` between them and the stack sits `margin_v` above
+    the bottom edge. libass instead sizes text by usWinAscent+usWinDescent and spaces lines
+    by the same metrics. To match, the ASS Fontsize is scaled by the font's real metrics and
+    every wrapped line is its own event anchored (\\an2\\pos) at the baseline the preview uses.
+
+    Layer 0 is the blurred mask that hides the old hardcoded subtitle; layer 1 is the text.
     """
     cfg = config or {}
-    font_aliases: dict[str, str] = {
-        "phetsarath ot": "Phetsarath",
-        "phetsarath": "Phetsarath",
-        "kantumruy": "Kantumruy Pro",
-        "kantumruy pro": "Kantumruy Pro",
-    }
     raw_font = str(cfg.get("font") or "").strip()
-    font_name = font_aliases.get(raw_font.lower(), raw_font) or font
+    if raw_font == "__custom__":
+        raw_font = ""
+    font_name = FONT_ALIASES.get(raw_font.lower(), raw_font) or FONT_ALIASES.get(font.lower(), font)
 
     if fonts_dir is None:
-        candidate = Path(__file__).resolve().parents[2] / "assets" / "fonts"
-        if not candidate.exists():
-            candidate = Path(__file__).resolve().parents[2] / "app" / "fonts"
-        if candidate.exists():
-            fonts_dir = candidate
+        fonts_dir = default_fonts_dir()
 
-    # Exact video dimensions: do not scale down to virtual canvas
     if video_width and video_height and video_width > 0 and video_height > 0:
-        playres_x = int(video_width)
-        playres_y = int(video_height)
+        playres_x, playres_y = int(video_width), int(video_height)
     else:
-        playres_x = 1920
-        playres_y = 1080
+        playres_x, playres_y = 1920, 1080
 
-    logical_fontsize = max(12, int(cfg.get("font_size") or 50))
-    metric_scale, extra_descent_ratio = get_ass_font_metrics(font_name, fonts_dir)
-    ass_fontsize = max(12, round(logical_fontsize * metric_scale))
+    bold = _cfg_flag(cfg, "bold", True)
+    italic = _cfg_flag(cfg, "italic", False)
+    em = max(12.0, _cfg_num(cfg, "font_size", 50))
+    metrics = font_metrics(font_name, bold, italic, fonts_dir)
+    ass_fontsize = em * metrics.libass_scale
+    advances = glyph_advances(metrics)
 
-    color_hex = str(cfg.get("color") or "#FFFFFF")
-    color_border_hex = str(cfg.get("color_border") or "#000000")
-    color_shadow_hex = str(cfg.get("color_shadow") or "#000000")
+    has_border = _cfg_flag(cfg, "has_border", True)
+    has_shadow = _cfg_flag(cfg, "has_shadow", True)
+    outline = max(0.0, _cfg_num(cfg, "outline", 3.0)) if has_border else 0.0
+    shadow = max(0.0, _cfg_num(cfg, "shadow", 1.5)) if has_shadow else 0.0
 
-    has_border = cfg.get("has_border", True)
-    if isinstance(has_border, str):
-        has_border = has_border.lower() not in ("false", "0", "no")
+    margin_l = max(0, int(round(_cfg_num(cfg, "margin_l", 50))))
+    margin_r = max(0, int(round(_cfg_num(cfg, "margin_r", 50))))
+    margin_v = max(5.0, _cfg_num(cfg, "margin_v", 50))
+    line_spacing = max(0.0, _cfg_num(cfg, "line_spacing", 12))
+    pad_x = max(2.0, _cfg_num(cfg, "mask_padding_x", 24))
+    pad_y = pad_x * MASK_PAD_Y_RATIO
 
-    has_shadow = cfg.get("has_shadow", True)
-    if isinstance(has_shadow, str):
-        has_shadow = has_shadow.lower() not in ("false", "0", "no")
-
-    bold = 1 if cfg.get("bold", True) else 0
-    italic = 1 if cfg.get("italic", False) else 0
-
-    margin_l = max(0, int(cfg.get("margin_l") if cfg.get("margin_l") is not None else 50))
-    margin_r = max(0, int(cfg.get("margin_r") if cfg.get("margin_r") is not None else 50))
-    raw_margin_v = int(cfg.get("margin_v") or 40)
-    ass_margin_v = max(0, round(raw_margin_v - logical_fontsize * extra_descent_ratio))
-    line_height = int(logical_fontsize * 1.3)
-    outline = float(cfg.get("outline") or 3.0) if has_border else 0.0
-    shadow = float(cfg.get("shadow") or 1.5) if has_shadow else 0.0
-
-    line_spacing = max(0, int(cfg.get("line_spacing") or 0))
-    mask_padding_x = max(2, int(cfg.get("mask_padding_x") if cfg.get("mask_padding_x") is not None else 24))
-
-    mask_enabled = cfg.get("mask_enabled", True)
-    if isinstance(mask_enabled, str):
-        mask_enabled = mask_enabled.lower() not in ("false", "0", "no")
-
-    mask_by_text = cfg.get("mask_by_text", True)
-    if isinstance(mask_by_text, str):
-        mask_by_text = mask_by_text.lower() not in ("false", "0", "no")
-
-    mask_color_hex = str(cfg.get("mask_color") or "#000000")
-    raw_opacity = float(cfg.get("mask_opacity") if cfg.get("mask_opacity") is not None else 40)
-    if raw_opacity > 1.0:
-        raw_opacity = raw_opacity / 100.0
-    mask_opacity = max(0.0, min(1.0, raw_opacity))
-    mask_alpha = int((1.0 - mask_opacity) * 255)
-    mask_ass_colour = hex_to_ass_color(mask_color_hex, alpha=mask_alpha)
-
-    mask_blur = int(cfg.get("mask_blur") if cfg.get("mask_blur") is not None else 10)
+    mask_enabled = _cfg_flag(cfg, "mask_enabled", True)
+    mask_by_text = _cfg_flag(cfg, "mask_by_text", True)
     mask_shape = str(cfg.get("mask_shape") or "pill").lower()
+    mask_blur = max(0, int(round(_cfg_num(cfg, "mask_blur", 10))))
+    opacity = _cfg_num(cfg, "mask_opacity", 40)
+    if opacity > 1.0:
+        opacity /= 100.0
+    opacity = max(0.0, min(1.0, opacity))
+    mask_alpha = int(round((1.0 - opacity) * 255))
+    mask_colour = hex_to_ass_color(str(cfg.get("mask_color") or "#000000"), alpha=mask_alpha)
 
-    backdrop_border_style = 3
-    backdrop_outline = mask_padding_x
-    if mask_shape == "bar":
-        backdrop_margin_l = 0
-        backdrop_margin_r = 0
-        backdrop_back_colour = mask_ass_colour
-    else:
-        backdrop_margin_l = margin_l
-        backdrop_margin_r = margin_r
-        backdrop_back_colour = mask_ass_colour
+    primary_colour = hex_to_ass_color(str(cfg.get("color") or "#FFFFFF"), alpha=0)
+    border_colour = hex_to_ass_color(str(cfg.get("color_border") or "#000000"), alpha=0)
+    shadow_colour = hex_to_ass_color(str(cfg.get("color_shadow") or "#000000"), alpha=0x80)
 
-    primary_colour = hex_to_ass_color(color_hex, alpha=0)
-    border_colour = hex_to_ass_color(color_border_hex, alpha=0)
-    shadow_colour = hex_to_ass_color(color_shadow_hex, alpha=0x80)
-
+    b, i = (1 if bold else 0), (1 if italic else 0)
+    fs = _fmt(ass_fontsize)
+    mv = int(round(margin_v))
+    style_default = (
+        f"Style: Default,{font_name},{fs},{primary_colour},&H000000FF,{border_colour},{shadow_colour},"
+        f"{b},{i},0,0,100,100,0,0,1,{outline:.1f},{shadow:.1f},2,{margin_l},{margin_r},{mv},1"
+    )
     if mask_by_text:
-        backdrop_style_line = f"Style: Backdrop,{font_name},{ass_fontsize},&HFF000000,&H000000FF,{mask_ass_colour},{backdrop_back_colour},{bold},{italic},0,0,100,100,0,0,{backdrop_border_style},{backdrop_outline},0,2,{backdrop_margin_l},{backdrop_margin_r},{ass_margin_v},1"
+        style_backdrop = (
+            f"Style: Backdrop,{font_name},{fs},&HFF000000,&H000000FF,{mask_colour},{mask_colour},"
+            f"{b},{i},0,0,100,100,0,0,3,{_fmt(pad_x)},0,2,{margin_l},{margin_r},{mv},1"
+        )
     else:
-        backdrop_style_line = f"Style: BackdropFixed,{font_name},{ass_fontsize},{mask_ass_colour},&H000000FF,{mask_ass_colour},{mask_ass_colour},0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1"
+        style_backdrop = (
+            f"Style: BackdropFixed,{font_name},{fs},{mask_colour},&H000000FF,{mask_colour},{mask_colour},"
+            f"0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1"
+        )
 
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {playres_x}
 PlayResY: {playres_y}
-WrapStyle: 0
+WrapStyle: 2
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{ass_fontsize},{primary_colour},&H000000FF,{border_colour},{shadow_colour},{bold},{italic},0,0,100,100,0,0,1,{outline},{shadow},2,{margin_l},{margin_r},{ass_margin_v},1
-{backdrop_style_line}
+{style_default}
+{style_backdrop}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    lines = []
-    blur_tag = f"{{\\blur{mask_blur}}}" if mask_blur > 0 else ""
+
+    # --- geometry, in video pixels measured from the bottom edge ---
+    css_line_h = PREVIEW_LINE_HEIGHT * em
+    css_content = (metrics.css_ascent_ratio + metrics.css_descent_ratio) * em
+    # baseline height inside a CSS line box (half-leading + descent)
+    css_baseline = (css_line_h - css_content) / 2 + metrics.css_descent_ratio * em
+    lib_descent = metrics.libass_descent * em
+    lib_box_h = metrics.libass_scale * em  # libass line box = BorderStyle 3 box before \ybord
+    stack_pad = pad_y if (mask_enabled and mask_by_text) else 0.0
+    pitch = css_line_h + 2 * stack_pad + line_spacing
+    x_center = margin_l + (playres_x - margin_l - margin_r) / 2
     available_width = max(50.0, float(playres_x - margin_l - margin_r))
-    mask_alpha_hex = f"&H{mask_alpha:02X}&"
-    backdrop_line_break_tag = (
-        f"\\N{{\\fs{line_spacing}\\alpha&HFF&}}\\h\\N{{\\fs{ass_fontsize}\\1a&HFF&\\3a{mask_alpha_hex}\\4a{mask_alpha_hex}}}"
-        if line_spacing > 0
-        else r"\N"
-    )
-    default_line_break_tag = (
-        f"\\N{{\\fs{line_spacing}\\alpha&HFF&}}\\h\\N{{\\fs{ass_fontsize}\\alpha&H00&}}"
-        if line_spacing > 0
-        else r"\N"
-    )
+    ybord = max(0.0, (css_line_h + 2 * pad_y - lib_box_h) / 2)
+    blur_tag = f"\\blur{mask_blur}" if mask_blur > 0 else ""
+
+    if mask_shape == "pill":
+        radius_for = lambda w, h: h / 2  # noqa: E731
+    elif mask_shape == "rounded":
+        radius_for = lambda w, h: ROUNDED_RADIUS_RATIO * em  # noqa: E731
+    else:
+        radius_for = lambda w, h: 0.0  # noqa: E731
+
+    events: list[str] = []
     for c in cues:
-        raw_lines = wrap_text_for_ass(c.text.strip(), available_width, logical_fontsize)
-        escaped_lines = [
-            l.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
-            for l in raw_lines
-        ]
-        backdrop_text = backdrop_line_break_tag.join(escaped_lines)
-        default_text = default_line_break_tag.join(escaped_lines)
-        start = _ass_time(c.start_ms)
-        end = _ass_time(c.end_ms)
-        # Layer 0: blurred dark backdrop to obscure old hardcoded subtitles
-        if mask_enabled:
-            if mask_by_text:
-                lines.append(f"Dialogue: 0,{start},{end},Backdrop,,0,0,0,,{blur_tag}{backdrop_text}")
+        lines = [l for l in wrap_text_for_ass(c.text.strip(), available_width, em, advances) if l.strip()]
+        if not lines:
+            continue
+        escaped = [l.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}") for l in lines]
+        start, end = _ass_time(c.start_ms), _ass_time(c.end_ms)
+        n = len(escaped)
+
+        anchors: list[float] = []  # \an2 anchor y (bottom of libass line box), top line first
+        for idx in range(n):
+            k = n - 1 - idx  # 0 = bottom line
+            baseline_from_bottom = margin_v + stack_pad + css_baseline + k * pitch
+            anchors.append(playres_y - (baseline_from_bottom - lib_descent))
+
+        if mask_enabled and not mask_by_text:
+            block_h = n * css_line_h + (n - 1) * line_spacing
+            y2 = min(float(playres_y), playres_y - margin_v + pad_y)
+            y1 = max(0.0, playres_y - margin_v - block_h - pad_y)
+            if mask_shape == "bar":
+                x1, x2 = 0.0, float(playres_x)
             else:
-                x1 = 0 if mask_shape == "bar" else max(0, margin_l - mask_padding_x)
-                x2 = playres_x if mask_shape == "bar" else min(playres_x, max(x1 + 10, playres_x - margin_r + mask_padding_x))
-                w = x2 - x1
-                num_lines = max(1, len(raw_lines))
-                extra_spacing = (num_lines - 1) * line_spacing
-                h = line_height * num_lines + extra_spacing + round(logical_fontsize * 0.4)
-                y2 = playres_y - ass_margin_v + round(logical_fontsize * 0.2)
-                y1 = max(0, y2 - h)
-                lines.append(f"Dialogue: 0,{start},{end},BackdropFixed,,0,0,0,,{{\\pos({x1},{y1}){blur_tag}\\p1}}m 0 0 l {w} 0 l {w} {h} l 0 {h}{{\\p0}}")
-        # Layer 1: sharp styled text with black border and subtle shadow
-        lines.append(f"Dialogue: 1,{start},{end},Default,,0,0,0,,{default_text}")
-    return header + "\n".join(lines) + "\n"
+                x1 = max(0.0, margin_l - pad_x)
+                x2 = min(float(playres_x), max(x1 + 10, playres_x - margin_r + pad_x))
+            w, h = x2 - x1, max(1.0, y2 - y1)
+            r = 0.0 if mask_shape == "bar" else radius_for(w, h)
+            events.append(
+                f"Dialogue: 0,{start},{end},BackdropFixed,,0,0,0,,"
+                f"{{\\an7\\pos({_fmt(x1)},{_fmt(y1)}){blur_tag}\\p1}}{_rounded_rect(w, h, r)}{{\\p0}}"
+            )
+
+        for text, y in zip(escaped, anchors):
+            pos = f"\\an2\\pos({_fmt(x_center)},{_fmt(y)})"
+            if mask_enabled and mask_by_text:
+                events.append(
+                    f"Dialogue: 0,{start},{end},Backdrop,,0,0,0,,"
+                    f"{{{pos}{blur_tag}\\xbord{_fmt(pad_x)}\\ybord{_fmt(ybord)}}}{text}"
+                )
+            events.append(f"Dialogue: 1,{start},{end},Default,,0,0,0,,{{{pos}}}{text}")
+    return header + "\n".join(events) + "\n"
 
 
 def parse_srt(content: str) -> list[Cue]:
