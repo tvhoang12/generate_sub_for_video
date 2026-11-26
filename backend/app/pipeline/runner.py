@@ -16,7 +16,7 @@ from ..languages import get_language
 from ..translation.providers import LLMProvider, make_provider
 from ..translation.translator import FilmContext, Translator, merge_term_suggestions
 from . import media
-from .subtitles import Cue, format_timestamp, tighten_timing, to_ass, to_srt
+from .subtitles import Cue, format_timestamp, parse_srt, tighten_timing, to_ass, to_srt
 
 log = logging.getLogger("substudio.runner")
 
@@ -81,6 +81,10 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
     out.mkdir(parents=True, exist_ok=True)
     stem = safe_name(job.title)
     report: dict = {"dropped": [], "warnings": [], "outputs": [], "suggested_terms": [], "homophone_corrections": []}
+
+    if settings.test_mode:
+        _run_test_mode(job_id, job, languages, subtitle_config, video, work, out, stem, report)
+        return
 
     provider = provider_factory()
     _update(job_id, status=JobStatus.RUNNING, step="extract", progress=2, error=None, provider=provider.name,
@@ -169,6 +173,46 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
             _update(job_id, report=report)
     else:
         log.info("Job %d: burn_video is False, skipping video rendering", job_id)
+
+    _update(job_id, status=JobStatus.DONE, step=None, progress=100, report=report, finished_at=utcnow())
+
+
+def _run_test_mode(job_id, job, languages, subtitle_config, video, work, out, stem, report) -> None:
+    """TEST_MODE: no ASR, no LLM — burn the cues from TEST_SUBTITLE_FILE for every selected language."""
+    srt_file = settings.test_subtitle_file
+    if not srt_file.is_file():
+        raise RuntimeError(f"TEST_MODE: không tìm thấy file phụ đề {srt_file}")
+    cues = parse_srt(srt_file.read_text(encoding="utf-8-sig"))
+    if not cues:
+        raise RuntimeError(f"TEST_MODE: file phụ đề {srt_file.name} không có cue nào")
+    log.info("Job %d: TEST_MODE — dùng %d cue từ %s", job_id, len(cues), srt_file)
+    report["test_mode"] = True
+    report["warnings"].append(f"TEST_MODE: bỏ qua nhận dạng/dịch, phụ đề lấy từ {srt_file.name}")
+
+    _update(job_id, status=JobStatus.RUNNING, step="extract", progress=2, error=None, provider="test",
+            report=report, finished_at=None)
+    video_width, video_height = media.probe_video_dimensions(video)
+
+    burn_files: dict[str, Path] = {}
+    for lang in languages:
+        srt = out / f"{stem}.{lang.code}.srt"
+        srt.write_text(to_srt(cues), encoding="utf-8")
+        ass = work / f"{lang.code}.ass"
+        ass.write_text(
+            to_ass(cues, lang.font, config=subtitle_config, video_width=video_width, video_height=video_height),
+            encoding="utf-8",
+        )
+        burn_files[lang.code] = ass
+        report["outputs"].append({"file": srt.name, "kind": "srt", "lang": lang.code})
+    _update(job_id, progress=65, report=report)
+
+    if subtitle_config.get("burn_video", True):
+        for i, lang in enumerate(languages):
+            _update(job_id, step="render", progress=65 + int(35 * i / len(languages)))
+            mp4 = out / f"{stem} - {lang.code}.mp4"
+            media.burn_subtitles(video, burn_files[lang.code], mp4)
+            report["outputs"].append({"file": mp4.name, "kind": "video", "lang": lang.code})
+            _update(job_id, report=report)
 
     _update(job_id, status=JobStatus.DONE, step=None, progress=100, report=report, finished_at=utcnow())
 

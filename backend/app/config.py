@@ -79,6 +79,15 @@ class Settings:
         default_factory=lambda: float(os.getenv("FUNASR_VAD_SPEECH_NOISE_THRES", "0.8"))
     )
 
+    # Test mode: skip transcription + translation and use the subtitles from TEST_SUBTITLE_FILE
+    # for every selected language (only extract → render runs). For checking subtitle styling/burning.
+    test_mode: bool = field(
+        default_factory=lambda: os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
+    )
+    test_subtitle_file: Path = field(
+        default_factory=lambda: _path("TEST_SUBTITLE_FILE", PROJECT_ROOT / "EP1 (Reborn with rival).my.srt")
+    )
+
     # "deepseek" | "gemini" | "claude" | "openai" | "mock" (mock is for tests and local UI work only)
     translator: str = field(default_factory=lambda: os.getenv("TRANSLATOR_PROVIDER", "deepseek").lower())
 

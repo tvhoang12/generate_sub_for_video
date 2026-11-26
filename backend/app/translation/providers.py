@@ -109,12 +109,35 @@ class DeepSeekProvider:
             return True
         return False
 
+    def _log_usage(self, resp: Any, label: str, model: str, seconds: float) -> None:
+        """Log token usage of one billed request, so real API cost can be measured."""
+        import logging
+
+        usage = getattr(resp, "usage", None)
+        choices = getattr(resp, "choices", None)
+        details = getattr(usage, "completion_tokens_details", None)
+        logging.getLogger("substudio.providers").info(
+            "DeepSeek usage call=%s model=%s prompt=%s cache_hit=%s cache_miss=%s "
+            "completion=%s reasoning=%s total=%s finish=%s seconds=%.1f",
+            label,
+            model,
+            getattr(usage, "prompt_tokens", None),
+            getattr(usage, "prompt_cache_hit_tokens", None),
+            getattr(usage, "prompt_cache_miss_tokens", None),
+            getattr(usage, "completion_tokens", None),
+            getattr(details, "reasoning_tokens", None),
+            getattr(usage, "total_tokens", None),
+            getattr(choices[0], "finish_reason", None) if choices else None,
+            seconds,
+        )
+
     def _call_with_retry(
         self,
         messages: list[dict[str, str]],
         response_format: dict | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        label: str = "complete",
     ) -> Any:
         import logging
         import time
@@ -141,7 +164,9 @@ class DeepSeekProvider:
 
             for attempt in range(1, max_attempts + 1):
                 try:
+                    started = time.monotonic()
                     resp = self._client.chat.completions.create(**params)
+                    self._log_usage(resp, label, current_model, time.monotonic() - started)
                     DeepSeekProvider._shared_model_idx = self._current_model_idx
                     return resp
                 except Exception as e:
@@ -222,6 +247,7 @@ class DeepSeekProvider:
             messages=messages,
             max_tokens=1024,
             temperature=0.2,
+            label="context",
         )
         choice = response.choices[0] if (response and response.choices) else None
         if not choice or not choice.message:
@@ -247,6 +273,7 @@ class DeepSeekProvider:
         response = self._call_with_retry(
             messages=messages,
             response_format={"type": "json_object"},
+            label="batch",
         )
 
         choice = response.choices[0] if (response and response.choices) else None
