@@ -383,6 +383,7 @@ const FONT_OPTIONS = [
 const SAMPLE_TEXTS: Record<string, string> = {
   km: "ឥឡូវព្រះអធិរាជចង់ឱ្យលោកតាសរសេរថ្កោលទោសអតីតអធិរាជ",
   lo: "ຕອນນີ້ ພະເຈົ້າຈັກກະພັດ ຕ້ອງການໃຫ້ທ່ານຂຽນປະນາມອະດີດຈັກກະພັດ",
+  my: "ဒီကိစ္စနောက်ကွယ်က အမှန်တရားကို ကျွန်တော် ဖော်ထုတ်ပြမယ်",
   vi: "Tôi sẽ tìm ra chân tướng sự việc đằng sau chuyện này",
   en: "I will uncover the truth behind this incident",
   zh: "怎么做回甲乙丙丁，找回最初的自己",
@@ -632,6 +633,8 @@ export function SubtitleConfigCard({
         return '"Kantumruy Pro", "Noto Sans Khmer", var(--font-sans)';
       case "lo":
         return '"Phetsarath", "Noto Sans Lao", var(--font-sans)';
+      case "my":
+        return '"Noto Sans Myanmar", "Myanmar Text", var(--font-sans)';
       case "th":
         return '"Noto Sans Thai", "Leelawadee UI", var(--font-sans)';
       case "zh":
@@ -1788,10 +1791,11 @@ export function SubtitleConfigCard({
               {/* Sample Language Switcher */}
               <div className="flex items-center gap-1 text-xs">
                 <span className="text-muted-foreground font-medium mr-1">Chữ mẫu:</span>
-                {(["km", "lo", "vi", "zh", "en"] as const).map((code) => {
+                {(["km", "lo", "my", "vi", "zh", "en"] as const).map((code) => {
                   const labels: Record<string, string> = {
                     km: "Khmer",
                     lo: "Lào",
+                    my: "Myanmar",
                     vi: "Việt",
                     zh: "Trung",
                     en: "Anh",

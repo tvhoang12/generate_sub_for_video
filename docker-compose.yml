@@ -19,3 +19,5 @@ services:
       - ./uploads:/app/uploads
       - /var/www/hls:/var/www/hls
       - /var/www/hls/substudio/jobs:/data/jobs
+      # TEST_MODE: file SRT nằm cạnh .env trên host → /app/<tên file> trong container
+      - "./${TEST_SUBTITLE_FILE:-EP1 (Reborn with rival).my.srt}:/app/${TEST_SUBTITLE_FILE:-EP1 (Reborn with rival).my.srt}:ro"
