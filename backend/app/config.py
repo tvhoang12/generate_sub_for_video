@@ -102,6 +102,16 @@ class Settings:
     translate_temperature: float = field(default_factory=lambda: float(os.getenv("TRANSLATE_TEMPERATURE", "0.3")))
     translate_max_tokens: int = field(default_factory=lambda: int(os.getenv("TRANSLATE_MAX_TOKENS", "8192")))
 
+    # Cost statistics. Dates (YYYY-MM-DD, comma separated) billed off-peak, e.g. Chinese holidays.
+    llm_off_peak_dates: frozenset = field(
+        default_factory=lambda: frozenset(
+            d.strip() for d in os.getenv("LLM_OFF_PEAK_DATES", "").split(",") if d.strip()
+        )
+    )
+    compute_cost_per_hour_usd: float = field(
+        default_factory=lambda: float(os.getenv("COMPUTE_COST_PER_HOUR_USD") or 0)
+    )
+
     # Google Gemini
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     gemini_backup_api_key: str = field(
@@ -173,7 +183,8 @@ class Settings:
 
     @property
     def jobs_dir(self) -> Path:
-        return self.data_dir / "jobs"
+        # Per-job folders of the subtitle tool (input video, audio, subtitles, burned mp4 output).
+        return _path("JOBS_DIR", self.data_dir / "jobs")
 
 
 settings = Settings()

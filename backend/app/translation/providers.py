@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from ..config import settings
 from .schemas import BatchItem, BatchTranslateResult, CleanResult, CleanedLine, TranslateResult, TranslatedLine
+from .usage import UsageReporter
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -56,7 +57,7 @@ def _is_transient_error(e: Any) -> bool:
     return "503" in s or "unavailable" in s or "500" in s or "internal" in s or "timeout" in s or "connection" in s
 
 
-class DeepSeekProvider:
+class DeepSeekProvider(UsageReporter):
     name = "deepseek"
     _shared_model_idx: int = 0
 
@@ -196,7 +197,9 @@ class DeepSeekProvider:
                 try:
                     started = time.monotonic()
                     resp = self._client.chat.completions.create(**params)
-                    self._log_usage(resp, label, current_model, time.monotonic() - started)
+                    seconds = time.monotonic() - started
+                    self._log_usage(resp, label, current_model, seconds)
+                    self._report_usage(resp, current_model, label, seconds)
                     DeepSeekProvider._shared_model_idx = self._current_model_idx
                     return resp
                 except Exception as e:
@@ -405,7 +408,7 @@ def get_gemini_rate_limiter() -> GeminiRateLimiter:
     return _gemini_rate_limiter
 
 
-class GeminiProvider:
+class GeminiProvider(UsageReporter):
     name = "gemini"
 
     _shared_key_idx: int = 0
@@ -495,7 +498,7 @@ class GeminiProvider:
             return True
         return False
 
-    def _generate_with_retry(self, **kwargs) -> Any:
+    def _generate_with_retry(self, label: str = "complete", **kwargs) -> Any:
         import logging
         import time
 
@@ -518,7 +521,9 @@ class GeminiProvider:
             for attempt in range(1, transient_retries + 2):
                 try:
                     get_gemini_rate_limiter().wait()
+                    started = time.monotonic()
                     resp = client.models.generate_content(**call_kwargs)
+                    self._report_usage(resp, current_model, label, time.monotonic() - started)
                     raw_text = getattr(resp, "text", "") or ""
                     if raw_text and _is_rate_limit_error(raw_text) and not (raw_text.startswith("{") or raw_text.startswith("[")):
                         raise RuntimeError(f"Rate limit exceeded trong response text: {raw_text}")
@@ -615,6 +620,7 @@ class GeminiProvider:
         for _ in range(total_attempts):
             try:
                 response = self._generate_with_retry(
+                    label="context",
                     contents=user,
                     config=types.GenerateContentConfig(
                         system_instruction=system,
@@ -648,6 +654,7 @@ class GeminiProvider:
         for _ in range(total_attempts):
             try:
                 response = self._generate_with_retry(
+                    label="batch",
                     contents=user,
                     config=types.GenerateContentConfig(
                         system_instruction=system,
@@ -697,7 +704,7 @@ class GeminiProvider:
 
 
 
-class ClaudeProvider:
+class ClaudeProvider(UsageReporter):
     name = "claude"
     _shared_model_idx: int = 0
 
@@ -751,6 +758,7 @@ class ClaudeProvider:
             current_model = self._models[self._current_model_idx]
             self._model = current_model
             try:
+                started = time.monotonic()
                 response = self._client.messages.parse(
                     model=current_model,
                     max_tokens=16000,
@@ -762,6 +770,12 @@ class ClaudeProvider:
                     # On a safety-classifier decline the API retries on the model Anthropic recommends.
                     extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
                     extra_body={"fallbacks": "default"},
+                )
+                # A server-side fallback may have answered with another model; bill that one.
+                served = getattr(response, "model", None)
+                self._report_usage(
+                    response, served if isinstance(served, str) else current_model, "complete",
+                    time.monotonic() - started,
                 )
                 if response.stop_reason == "refusal":
                     raise ProviderError(f"Claude ({current_model}) từ chối yêu cầu dịch")
@@ -792,12 +806,14 @@ class ClaudeProvider:
             current_model = self._models[self._current_model_idx]
             self._model = current_model
             try:
+                started = time.monotonic()
                 response = self._client.messages.create(
                     model=current_model,
                     max_tokens=1024,
                     system=system,
                     messages=[{"role": "user", "content": user}],
                 )
+                self._report_usage(response, current_model, "context", time.monotonic() - started)
                 text = ""
                 for blk in response.content:
                     if getattr(blk, "type", "") == "text":
@@ -820,7 +836,7 @@ class ClaudeProvider:
         return res.items
 
 
-class OpenAIProvider:
+class OpenAIProvider(UsageReporter):
     name = "openai"
     _shared_model_idx: int = 0
     _shared_key_idx: int = 0
@@ -900,12 +916,14 @@ class OpenAIProvider:
                 {"role": "user", "content": user},
             ]
             try:
+                started = time.monotonic()
                 response = self._client.chat.completions.parse(
                     model=current_model,
                     messages=messages,
                     response_format=schema,
                     temperature=0.2,
                 )
+                self._report_usage(response, current_model, "complete", time.monotonic() - started)
                 choice = response.choices[0] if (response and response.choices) else None
                 if not choice or not choice.message:
                     raise ProviderError(f"OpenAI ({current_model}) không trả về nội dung")
@@ -935,6 +953,9 @@ class OpenAIProvider:
             except TokenOverflowError:
                 raise
             except Exception as e:
+                # parse() raises on truncated output; the exception still carries the billed completion.
+                if truncated := getattr(e, "completion", None):
+                    self._report_usage(truncated, current_model, "complete", time.monotonic() - started)
                 last_error = e
                 log.warning("Model OpenAI '%s' gặp lỗi (%s). Thử fallback sang model tiếp theo trong danh sách...", current_model, e)
                 if not self._advance_to_next_model():
@@ -952,6 +973,7 @@ class OpenAIProvider:
             current_model = self._models[self._current_model_idx]
             self._model = current_model
             try:
+                started = time.monotonic()
                 res = self._client.chat.completions.create(
                     model=current_model,
                     messages=[
@@ -961,6 +983,7 @@ class OpenAIProvider:
                     temperature=0.2,
                     max_tokens=1024,
                 )
+                self._report_usage(res, current_model, "context", time.monotonic() - started)
                 text = (res.choices[0].message.content or "").strip()
                 if text:
                     OpenAIProvider._shared_model_idx = self._current_model_idx

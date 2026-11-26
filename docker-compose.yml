@@ -17,7 +17,7 @@ services:
       - ./backend/app:/app/backend/app
       - ./web/dist:/app/web/dist
       - ./uploads:/app/uploads
+      # Phân vùng lv_hls: HLS output, HLS upload, job tool sub (đường dẫn cấu hình trong .env)
       - /var/www/hls:/var/www/hls
-      - /var/www/hls/substudio/jobs:/data/jobs
       # TEST_MODE: file SRT nằm cạnh .env trên host → /app/<tên file> trong container
       - "./${TEST_SUBTITLE_FILE:-EP1 (Reborn with rival).my.srt}:/app/${TEST_SUBTITLE_FILE:-EP1 (Reborn with rival).my.srt}:ro"

@@ -5,6 +5,7 @@ import logging
 import shutil
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
@@ -15,10 +16,11 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from .config import settings
-from .db import Film, GlossaryTerm, Job, JobStatus, STEPS, get_session, init_db
+from .db import Film, GlossaryTerm, Job, JobStatus, ProcessingRun, STEPS, get_session, init_db
 from .hls import HlsRunner, hls_router
 from .languages import LANGUAGES, SOURCE_LANGUAGES
 from .pipeline.runner import JobRunner, job_dir, safe_name
+from .usage_report import build_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -144,6 +146,18 @@ def _api_routes():
         if runner and hasattr(runner, "get_status"):
             return runner.get_status()
         return {"running": 0, "queued": 0, "max_concurrent": 1}
+
+    # ---- cost statistics ----
+
+    @api.get("/usage")
+    def usage(
+        s: SessionDep,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        source_language: str | None = None,
+        job_id: int | None = None,
+    ):
+        return build_report(s, date_from, date_to, source_language, job_id)
 
     # ---- films & glossary ----
 
@@ -292,6 +306,9 @@ def _api_routes():
         if job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
             raise HTTPException(409, "Không thể xoá job đang chạy hoặc đang chờ")
         shutil.rmtree(job_dir(job_id), ignore_errors=True)
+        for run in s.exec(select(ProcessingRun).where(ProcessingRun.job_id == job_id)).all():
+            run.job_deleted = True  # the cost was paid; keep it in the statistics
+            s.add(run)
         s.delete(job)
         s.commit()
 

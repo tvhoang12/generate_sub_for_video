@@ -17,6 +17,7 @@ from ..translation.providers import LLMProvider, make_provider
 from ..translation.translator import FilmContext, Translator, merge_term_suggestions
 from . import media
 from .subtitles import Cue, format_timestamp, parse_srt, tighten_timing, to_ass, to_srt
+from .tracking import RunTracker, mark_interrupted_runs
 
 log = logging.getLogger("substudio.runner")
 
@@ -67,6 +68,11 @@ def _save_suggestions(job: Job, suggestions) -> list[dict]:
 
 
 def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_provider) -> None:
+    with RunTracker() as tracker:
+        _run_job(job_id, provider_factory, tracker)
+
+
+def _run_job(job_id: int, provider_factory: Callable[[], LLMProvider], tracker: RunTracker) -> None:
     with Session(engine) as s:
         job = s.get(Job, job_id)
         film_ctx, source_language = _film_context(s, job)
@@ -87,13 +93,21 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         return
 
     provider = provider_factory()
+    tracker.start(job, provider.name, source_language)  # not in TEST_MODE: nothing is translated there
+    provider.on_usage = tracker.record_llm
+    tracker.step("extract")
     _update(job_id, status=JobStatus.RUNNING, step="extract", progress=2, error=None, provider=provider.name,
             report=report, finished_at=None)
 
     wav = work / "audio.wav"
     media.extract_audio(video, wav)
+    try:
+        tracker.update(video_seconds=media.probe_duration(video))
+    except Exception as e:  # noqa: BLE001 - only used for statistics
+        log.warning("Job %d: không đo được thời lượng video: %s", job_id, e)
     video_width, video_height = media.probe_video_dimensions(video)
 
+    tracker.step("transcribe")
     _update(job_id, step="transcribe", progress=8)
     speech = media.detect_speech(wav)
     detected, cues = media.transcribe(wav, source_language, work / "asr", speech=speech)
@@ -101,7 +115,9 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         raise RuntimeError("Không phát hiện lời thoại nào trong video")
     cues = tighten_timing(cues, speech, int(settings.max_cue_seconds * 1000))
     report["source_language"] = detected
+    tracker.update(source_language=detected, cue_count=len(cues))
 
+    tracker.step("clean")
     _update(job_id, step="clean", progress=25, report=report)
     translator = Translator(provider, film_ctx)
     raw_transcript = " ".join(c.text for c in cues)
@@ -121,6 +137,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         homophone_fixed_source: dict[int, str] = {}
 
         for i, lang in enumerate(languages):
+            tracker.step("translate")
             _update(job_id, step="translate", progress=35 + int(30 * i / len(languages)), report=report)
             fixed_src_by_id, trans_by_id = translator.translate_in_batches(
                 cues,
@@ -159,6 +176,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
         if log_summary := getattr(provider, "log_usage_summary", None):
             log_summary(job_id)
 
+    tracker.step("finalize")
     # Write source SRT with corrected homophones
     source_cues = [
         Cue(c.id, c.start_ms, c.end_ms, homophone_fixed_source.get(c.id, c.text))
@@ -171,6 +189,7 @@ def run_job(job_id: int, provider_factory: Callable[[], LLMProvider] = make_prov
 
     if subtitle_config.get("burn_video", True):
         for i, lang in enumerate(languages):
+            tracker.step("render")
             _update(job_id, step="render", progress=65 + int(35 * i / len(languages)))
             mp4 = out / f"{stem} - {lang.code}.mp4"
             media.burn_subtitles(video, burn_files[lang.code], mp4)
@@ -232,6 +251,7 @@ class JobRunner:
         self._active_job_id: int | None = None
 
     def start(self) -> None:
+        mark_interrupted_runs()
         with Session(engine) as s:
             pending = s.exec(
                 select(Job).where(Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])).order_by(Job.id)

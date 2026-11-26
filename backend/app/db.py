@@ -95,6 +95,48 @@ class HlsJob(SQLModel, table=True):
     queue_position: int | None = None
 
 
+class ProcessingRun(SQLModel, table=True):
+    """Cost record of one attempt at a job (a retry adds a row). Kept when the job is deleted."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    job_id: int = Field(index=True)  # no foreign key: the record outlives the job
+    job_deleted: bool = False
+    job_title: str
+    film_id: int | None = None
+    source_language: str = "auto"  # replaced by the detected language after transcription
+    languages: list = Field(default_factory=list, sa_column=Column(JSON))
+    provider: str
+    status: str = "running"  # running | done | failed | interrupted
+    error: str | None = None
+    video_seconds: float | None = None
+    cue_count: int | None = None
+    step_seconds: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    compute_seconds: float = 0  # wall time of the steps that run on this machine
+    compute_cost_usd: float | None = None  # None while COMPUTE_COST_PER_HOUR_USD is unset
+    started_at: datetime = Field(default_factory=utcnow, index=True)
+    finished_at: datetime | None = None
+
+
+class LlmUsage(SQLModel, table=True):
+    """One billed LLM request. Token meanings: see translation.usage.LlmCall."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: int = Field(foreign_key="processingrun.id", index=True)
+    provider: str
+    model: str
+    label: str
+    prompt_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_write_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+    seconds: float = 0
+    cost_usd: float | None = None  # at the price in force when recorded; None = unpriced model
+    price_tier: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 engine = create_engine(
     f"sqlite:///{settings.db_path.as_posix()}", connect_args={"check_same_thread": False}
 )
