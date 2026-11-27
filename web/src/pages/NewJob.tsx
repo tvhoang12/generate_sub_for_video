@@ -307,7 +307,9 @@ export function NewJobPage() {
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted-foreground">Lề dọc</dt>
-                <dd className="text-right font-semibold">{subConfig.margin_v ?? 50}px</dd>
+                <dd className="text-right font-semibold">
+                  {subConfig.v_anchor === "top" ? "Lề trên" : "Lề dưới"} {subConfig.margin_v ?? 50}px
+                </dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted-foreground">Cách dòng</dt>

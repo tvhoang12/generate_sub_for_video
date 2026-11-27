@@ -56,6 +56,11 @@ export interface SubtitleConfig {
   margin_l?: number;
   margin_r?: number;
   margin_v?: number;
+  /** Which edge margin_v is measured from: bottom = lines grow upward, top = lines grow downward. */
+  v_anchor?: "bottom" | "top";
+  /** Frame (video px) the pixel values above were set on; the backend rescales them to the real video. */
+  ref_width?: number;
+  ref_height?: number;
   outline?: number;
   shadow?: number;
   line_spacing?: number;

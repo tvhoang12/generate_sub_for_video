@@ -51,6 +51,9 @@ export const DEFAULT_SUBTITLE_CONFIG: Required<SubtitleConfig> = {
   margin_l: 50,
   margin_r: 50,
   margin_v: 50,
+  v_anchor: "bottom",
+  ref_width: 1920,
+  ref_height: 1080,
   outline: 3.0,
   shadow: 1.5,
   line_spacing: 12,
@@ -63,6 +66,39 @@ export const DEFAULT_SUBTITLE_CONFIG: Required<SubtitleConfig> = {
   mask_shape: "pill",
   mask_by_text: true,
 };
+
+/**
+ * Re-express pixel values set on one frame for another frame, so the subtitle keeps the same
+ * place and relative size on any video. Mirrors backend subtitles.fit_config_to_frame:
+ * sizes follow the short side, margin_v the height, margin_l/margin_r the width.
+ */
+export function fitConfigToFrame(cfg: SubtitleConfig, width: number, height: number): SubtitleConfig {
+  const refW = Number(cfg.ref_width) > 0 ? Number(cfg.ref_width) : DEFAULT_SUBTITLE_CONFIG.ref_width;
+  const refH = Number(cfg.ref_height) > 0 ? Number(cfg.ref_height) : DEFAULT_SUBTITLE_CONFIG.ref_height;
+  if (!(width > 0 && height > 0) || (refW === width && refH === height)) {
+    return { ...cfg, ref_width: refW, ref_height: refH };
+  }
+  const s = Math.min(width, height) / Math.min(refW, refH);
+  const sx = width / refW;
+  const sy = height / refH;
+  const d = DEFAULT_SUBTITLE_CONFIG;
+  const int = (v: number | undefined, def: number, k: number) => Math.round((v ?? def) * k);
+  const tenth = (v: number | undefined, def: number, k: number) => Math.round((v ?? def) * k * 10) / 10;
+  return {
+    ...cfg,
+    font_size: int(cfg.font_size, d.font_size, s),
+    line_spacing: int(cfg.line_spacing, d.line_spacing, s),
+    mask_padding_x: int(cfg.mask_padding_x, d.mask_padding_x, s),
+    mask_blur: int(cfg.mask_blur, d.mask_blur, s),
+    outline: tenth(cfg.outline, d.outline, s),
+    shadow: tenth(cfg.shadow, d.shadow, s),
+    margin_v: int(cfg.margin_v, d.margin_v, sy),
+    margin_l: int(cfg.margin_l, d.margin_l, sx),
+    margin_r: int(cfg.margin_r, d.margin_r, sx),
+    ref_width: width,
+    ref_height: height,
+  };
+}
 
 export function hexToRgba(hex: string, opacity: number): string {
   const c = (hex || "#000000").replace("#", "").trim();
@@ -582,6 +618,17 @@ export function SubtitleConfigCard({
     ? 1920
     : 1080;
 
+  // Values are video pixels of the frame they were set on (ref_width x ref_height). When the frame
+  // changes (another video, or the 16:9 / 9:16 sample), carry them over proportionally so the
+  // preview and the burned video keep the same placement and relative size.
+  useEffect(() => {
+    if (cfg.ref_width === refVideoWidth && cfg.ref_height === refVideoHeight) return;
+    onChange(fitConfigToFrame(value, refVideoWidth, refVideoHeight));
+  }, [refVideoWidth, refVideoHeight, cfg.ref_width, cfg.ref_height, value, onChange]);
+
+  // margin_v is measured from the bottom edge (lines grow upward) or the top edge (lines grow downward)
+  const anchorTop = cfg.v_anchor === "top";
+
   // Direct Drag-and-Drop vertical positioning calculation in exact video pixel coordinates
   const handlePointerDown = (e: PointerEvent) => {
     e.preventDefault();
@@ -594,15 +641,15 @@ export function SubtitleConfigCard({
     (e: PointerEvent) => {
       if (!isDragging || !previewContainerRef.current) return;
       const rect = previewContainerRef.current.getBoundingClientRect();
-      const bottomDistancePx = rect.bottom - e.clientY;
-      const ratio = Math.max(0.01, Math.min(0.85, bottomDistancePx / rect.height));
+      const edgeDistancePx = anchorTop ? e.clientY - rect.top : rect.bottom - e.clientY;
+      const ratio = Math.max(0.01, Math.min(0.85, edgeDistancePx / rect.height));
       const newMarginV = Math.max(
         10,
         Math.min(Math.round(refVideoHeight * 0.85), Math.round(ratio * refVideoHeight))
       );
       update("margin_v", newMarginV);
     },
-    [isDragging, update, refVideoHeight]
+    [isDragging, update, refVideoHeight, anchorTop]
   );
 
   const handlePointerUp = (e: PointerEvent) => {
@@ -689,11 +736,13 @@ export function SubtitleConfigCard({
       ? containerSize.width / refVideoWidth
       : 0.333;
 
-  const renderedFontSize = Math.max(9, Math.round(cfg.font_size * previewScale));
-  // Scaled line spacing and mask padding matching libass render
-  const renderedLineSpacing = Math.round((cfg.line_spacing ?? 12) * previewScale);
-  const renderedMaskPaddingX = Math.round((cfg.mask_padding_x ?? 24) * previewScale);
-  const renderedMaskPaddingY = Math.max(2, Math.round((cfg.mask_padding_x ?? 24) * 0.45 * previewScale));
+  // Exact (unrounded) scale with the same clamps as backend to_ass, so every line lands
+  // where libass draws it; rounding each value drifted multi-line stacks by a few px.
+  const renderedFontSize = Math.max(12, cfg.font_size ?? 50) * previewScale;
+  const renderedLineSpacing = Math.max(0, cfg.line_spacing ?? 12) * previewScale;
+  const maskPadXVideo = Math.max(2, cfg.mask_padding_x ?? 24);
+  const renderedMaskPaddingX = maskPadXVideo * previewScale;
+  const renderedMaskPaddingY = maskPadXVideo * 0.45 * previewScale;
 
   const effectiveMarginL = Math.max(0, Number(cfg.margin_l ?? 50));
   const effectiveMarginR = Math.max(0, Number(cfg.margin_r ?? 50));
@@ -1660,9 +1709,39 @@ export function SubtitleConfigCard({
                 <div className="flex items-center justify-between text-xs font-semibold">
                   <span className="flex items-center gap-1.5 text-foreground">
                     <MoveVertical className="size-3.5 text-primary" aria-hidden />
-                    <span>Vị trí theo chiều dọc (Căn lề dưới MarginV)</span>
+                    <span>Vị trí theo chiều dọc ({anchorTop ? "Căn lề trên" : "Căn lề dưới"} MarginV)</span>
                   </span>
                   <span className="font-mono font-bold text-primary">{effectiveMarginV} px</span>
+                </div>
+
+                <div role="radiogroup" aria-label="Căn phụ đề theo lề" className="grid grid-cols-2 gap-2">
+                  {([
+                    { value: "bottom", label: "Căn lề dưới", hint: "Nhiều dòng thì chữ dồn lên trên" },
+                    { value: "top", label: "Căn lề trên", hint: "Nhiều dòng thì chữ dồn xuống dưới" },
+                  ] as const).map((opt) => {
+                    const active = (cfg.v_anchor ?? "bottom") === opt.value;
+                    return (
+                      <label
+                        key={opt.value}
+                        className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 text-xs transition-colors ${
+                          active ? "border-primary bg-primary/10" : "border-border bg-background hover:border-primary/50"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="subtitle-v-anchor"
+                          value={opt.value}
+                          checked={active}
+                          onChange={() => update("v_anchor", opt.value)}
+                          className="mt-0.5 accent-primary"
+                        />
+                        <span className="flex flex-col">
+                          <span className="font-semibold text-foreground">{opt.label}</span>
+                          <span className="text-[11px] text-muted-foreground">{opt.hint}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1688,12 +1767,16 @@ export function SubtitleConfigCard({
                   />
                 </div>
                 <div className="flex justify-between text-[11px] text-muted-foreground pt-0.5">
-                  <button type="button" onClick={() => update("margin_v", 30)} className={`hover:text-primary ${effectiveMarginV === 30 ? "font-bold text-primary underline" : ""}`}>Sát đáy (30)</button>
+                  <button type="button" onClick={() => update("margin_v", 30)} className={`hover:text-primary ${effectiveMarginV === 30 ? "font-bold text-primary underline" : ""}`}>{anchorTop ? "Sát đỉnh" : "Sát đáy"} (30)</button>
                   <button type="button" onClick={() => update("margin_v", 50)} className={`hover:text-primary ${effectiveMarginV === 50 ? "font-bold text-primary underline" : ""}`}>Chuẩn (50)</button>
                   <button type="button" onClick={() => update("margin_v", 90)} className={`hover:text-primary ${effectiveMarginV === 90 ? "font-bold text-primary underline" : ""}`}>Cao (90)</button>
                   <button type="button" onClick={() => update("margin_v", 140)} className={`hover:text-primary ${effectiveMarginV === 140 ? "font-bold text-primary underline" : ""}`}>Rất cao (140)</button>
                 </div>
-                <span className="text-[11px] text-muted-foreground">Khoảng cách từ mép dưới lên dòng phụ đề (chuẩn ASS MarginV)</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {anchorTop
+                    ? "Khoảng cách từ mép trên xuống dòng phụ đề đầu tiên (chuẩn ASS MarginV)"
+                    : "Khoảng cách từ mép dưới lên dòng phụ đề cuối cùng (chuẩn ASS MarginV)"}
+                </span>
               </div>
 
               {/* Margin Left (L) & Right (R) (3 cols each) */}
@@ -1920,9 +2003,9 @@ export function SubtitleConfigCard({
 
                   {/* Subtitle Positioning Container */}
                   <div
-                    className="absolute inset-x-0 flex flex-col justify-end pointer-events-none"
+                    className={`absolute inset-x-0 flex flex-col pointer-events-none ${anchorTop ? "justify-start" : "justify-end"}`}
                     style={{
-                      bottom: `${scaledMarginVPct}%`,
+                      ...(anchorTop ? { top: `${scaledMarginVPct}%` } : { bottom: `${scaledMarginVPct}%` }),
                       paddingLeft: `${scaledMarginLPct}%`,
                       paddingRight: `${scaledMarginRPct}%`,
                     }}
@@ -1936,7 +2019,7 @@ export function SubtitleConfigCard({
                         {/* Drag indicator hint on hover/drag */}
                         <span
                           aria-hidden
-                          className="absolute -top-6 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-mono text-white opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-20"
+                          className={`absolute ${anchorTop ? "-bottom-6" : "-top-6"} left-1/2 -translate-x-1/2 flex items-center gap-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-mono text-white opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-20`}
                         >
                           <GripVertical className="size-3 text-primary" />
                           <span>Kéo để chỉnh vị trí</span>
@@ -1962,7 +2045,7 @@ export function SubtitleConfigCard({
                                     cfg.mask_shape === "pill"
                                       ? "9999px"
                                       : cfg.mask_shape === "rounded"
-                                      ? `${Math.max(4, Math.round(renderedFontSize * 0.28))}px`
+                                      ? `${renderedFontSize * 0.28}px`
                                       : "0px",
                                   padding: cfg.mask_enabled
                                     ? `${renderedMaskPaddingY}px ${renderedMaskPaddingX}px`
@@ -1997,7 +2080,7 @@ export function SubtitleConfigCard({
                                     cfg.mask_shape === "pill"
                                       ? "9999px"
                                       : cfg.mask_shape === "rounded"
-                                      ? `${Math.max(4, Math.round(renderedFontSize * 0.28))}px`
+                                      ? `${renderedFontSize * 0.28}px`
                                       : "0px",
                                   backgroundColor: maskBgColor,
                                   backdropFilter: scaledMaskBlurPx > 0 ? `blur(${scaledMaskBlurPx}px)` : "none",
@@ -2055,7 +2138,7 @@ export function SubtitleConfigCard({
                 <span>•</span>
                 <span>Độ rộng mờ: <strong className="text-primary">{cfg.mask_padding_x ?? 24}px</strong></span>
                 <span>•</span>
-                <span>Lề dưới: <strong className="text-primary">{effectiveMarginV}px</strong></span>
+                <span>{anchorTop ? "Lề trên" : "Lề dưới"}: <strong className="text-primary">{effectiveMarginV}px</strong></span>
                 <span>•</span>
                 <span>Lề L/R: <strong className="text-primary">{effectiveMarginL}/{effectiveMarginR}px</strong></span>
               </div>

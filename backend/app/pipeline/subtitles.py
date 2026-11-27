@@ -351,6 +351,33 @@ def _cfg_flag(cfg: dict, key: str, default: bool) -> bool:
     return bool(v) if v is not None else default
 
 
+# Pixel settings and which frame dimension they follow when the video differs from the frame
+# the config was set on (web: fitConfigToFrame in SubtitleConfigCard.tsx).
+_SIZE_KEYS = ("font_size", "line_spacing", "mask_padding_x", "mask_blur", "outline", "shadow")
+_DEFAULT_PX = {"font_size": 50, "line_spacing": 12, "mask_padding_x": 24, "mask_blur": 10,
+               "outline": 3.0, "shadow": 1.5, "margin_v": 50, "margin_l": 50, "margin_r": 50}
+
+
+def fit_config_to_frame(cfg: dict, width: int, height: int) -> dict:
+    """Rescale pixel values set on the `ref_width` x `ref_height` frame to a `width` x `height` video.
+
+    Sizes follow the short side, margin_v the height and margin_l/margin_r the width, so the
+    subtitle keeps its place and relative size on any resolution or aspect ratio. A config
+    without a reference frame is returned unchanged (values are already video pixels).
+    """
+    ref_w, ref_h = _cfg_num(cfg, "ref_width", 0), _cfg_num(cfg, "ref_height", 0)
+    if ref_w <= 0 or ref_h <= 0 or width <= 0 or height <= 0 or (ref_w == width and ref_h == height):
+        return cfg
+    s = min(width, height) / min(ref_w, ref_h)
+    factors = {k: s for k in _SIZE_KEYS} | {"margin_v": height / ref_h,
+                                            "margin_l": width / ref_w, "margin_r": width / ref_w}
+    out = dict(cfg)
+    for key, k in factors.items():
+        out[key] = _cfg_num(cfg, key, _DEFAULT_PX[key]) * k
+    out["ref_width"], out["ref_height"] = width, height
+    return out
+
+
 def _fmt(x: float) -> str:
     """Compact number for ASS fields: 2 decimals, no trailing zeros."""
     s = f"{x:.2f}".rstrip("0").rstrip(".")
@@ -382,17 +409,25 @@ def to_ass(
 ) -> str:
     """ASS script that renders the subtitle exactly where the web preview draws it.
 
-    PlayRes equals the video resolution, so every config value is in video pixels.
+    PlayRes equals the video resolution, so every config value is in video pixels; values set on
+    another frame (`ref_width` x `ref_height`) are first rescaled by `fit_config_to_frame`.
 
     The preview is HTML: `font-size` is the em, each line is a `line-height: 1.3` box,
-    lines are stacked with `line_spacing` between them and the stack sits `margin_v` above
-    the bottom edge. libass instead sizes text by usWinAscent+usWinDescent and spaces lines
+    lines are stacked with `line_spacing` between them and the stack sits `margin_v` from the
+    anchored edge: `v_anchor="bottom"` (default) keeps the last line `margin_v` above the bottom
+    edge and extra lines grow upward; `v_anchor="top"` keeps the first line `margin_v` below the
+    top edge and extra lines grow downward. libass instead sizes text by usWinAscent+usWinDescent and spaces lines
     by the same metrics. To match, the ASS Fontsize is scaled by the font's real metrics and
     every wrapped line is its own event anchored (\\an2\\pos) at the baseline the preview uses.
 
     Layer 0 is the blurred mask that hides the old hardcoded subtitle; layer 1 is the text.
     """
     cfg = config or {}
+    if video_width and video_height and video_width > 0 and video_height > 0:
+        playres_x, playres_y = int(video_width), int(video_height)
+    else:
+        playres_x, playres_y = 1920, 1080
+    cfg = fit_config_to_frame(cfg, playres_x, playres_y)
     raw_font = str(cfg.get("font") or "").strip()
     if raw_font == "__custom__":
         raw_font = ""
@@ -400,11 +435,6 @@ def to_ass(
 
     if fonts_dir is None:
         fonts_dir = default_fonts_dir()
-
-    if video_width and video_height and video_width > 0 and video_height > 0:
-        playres_x, playres_y = int(video_width), int(video_height)
-    else:
-        playres_x, playres_y = 1920, 1080
 
     bold = _cfg_flag(cfg, "bold", True)
     italic = _cfg_flag(cfg, "italic", False)
@@ -421,6 +451,8 @@ def to_ass(
     margin_l = max(0, int(round(_cfg_num(cfg, "margin_l", 50))))
     margin_r = max(0, int(round(_cfg_num(cfg, "margin_r", 50))))
     margin_v = max(5.0, _cfg_num(cfg, "margin_v", 50))
+    anchor_top = str(cfg.get("v_anchor") or "bottom").strip().lower() == "top"
+    align = 8 if anchor_top else 2
     line_spacing = max(0.0, _cfg_num(cfg, "line_spacing", 12))
     pad_x = max(2.0, _cfg_num(cfg, "mask_padding_x", 24))
     pad_y = pad_x * MASK_PAD_Y_RATIO
@@ -445,12 +477,12 @@ def to_ass(
     mv = int(round(margin_v))
     style_default = (
         f"Style: Default,{font_name},{fs},{primary_colour},&H000000FF,{border_colour},{shadow_colour},"
-        f"{b},{i},0,0,100,100,0,0,1,{outline:.1f},{shadow:.1f},2,{margin_l},{margin_r},{mv},1"
+        f"{b},{i},0,0,100,100,0,0,1,{outline:.1f},{shadow:.1f},{align},{margin_l},{margin_r},{mv},1"
     )
     if mask_by_text:
         style_backdrop = (
             f"Style: Backdrop,{font_name},{fs},&HFF000000,&H000000FF,{mask_colour},{mask_colour},"
-            f"{b},{i},0,0,100,100,0,0,3,{_fmt(pad_x)},0,2,{margin_l},{margin_r},{mv},1"
+            f"{b},{i},0,0,100,100,0,0,3,{_fmt(pad_x)},0,{align},{margin_l},{margin_r},{mv},1"
         )
     else:
         style_backdrop = (
@@ -474,7 +506,7 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-    # --- geometry, in video pixels measured from the bottom edge ---
+    # --- geometry, in video pixels measured from the anchored edge ---
     css_line_h = PREVIEW_LINE_HEIGHT * em
     css_content = (metrics.css_ascent_ratio + metrics.css_descent_ratio) * em
     # baseline height inside a CSS line box (half-leading + descent)
@@ -486,6 +518,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     x_center = margin_l + (playres_x - margin_l - margin_r) / 2
     available_width = max(50.0, float(playres_x - margin_l - margin_r))
     ybord = max(0.0, (css_line_h + 2 * pad_y - lib_box_h) / 2)
+    # The BorderStyle 3 box is centred on the libass line box, the preview's on the CSS line box;
+    # shift the backdrop by the gap between those centres (Kantumruy: ~0.054 em upward).
+    css_center_above_baseline = css_line_h / 2 - css_baseline
+    lib_center_above_baseline = lib_box_h / 2 - lib_descent
+    backdrop_dy = lib_center_above_baseline - css_center_above_baseline
     blur_tag = f"\\blur{mask_blur}" if mask_blur > 0 else ""
 
     if mask_shape == "pill":
@@ -506,14 +543,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         anchors: list[float] = []  # \an2 anchor y (bottom of libass line box), top line first
         for idx in range(n):
-            k = n - 1 - idx  # 0 = bottom line
-            baseline_from_bottom = margin_v + stack_pad + css_baseline + k * pitch
-            anchors.append(playres_y - (baseline_from_bottom - lib_descent))
+            if anchor_top:
+                # top of this CSS line box, then its baseline sits css_baseline above the box bottom
+                box_top = margin_v + stack_pad + idx * pitch
+                baseline_y = box_top + css_line_h - css_baseline
+            else:
+                k = n - 1 - idx  # 0 = bottom line
+                baseline_y = playres_y - (margin_v + stack_pad + css_baseline + k * pitch)
+            anchors.append(baseline_y + lib_descent)
 
         if mask_enabled and not mask_by_text:
             block_h = n * css_line_h + (n - 1) * line_spacing
-            y2 = min(float(playres_y), playres_y - margin_v + pad_y)
-            y1 = max(0.0, playres_y - margin_v - block_h - pad_y)
+            if anchor_top:
+                y1 = max(0.0, margin_v - pad_y)
+                y2 = min(float(playres_y), margin_v + block_h + pad_y)
+            else:
+                y2 = min(float(playres_y), playres_y - margin_v + pad_y)
+                y1 = max(0.0, playres_y - margin_v - block_h - pad_y)
             if mask_shape == "bar":
                 x1, x2 = 0.0, float(playres_x)
             else:
@@ -529,9 +575,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for text, y in zip(escaped, anchors):
             pos = f"\\an2\\pos({_fmt(x_center)},{_fmt(y)})"
             if mask_enabled and mask_by_text:
+                bpos = f"\\an2\\pos({_fmt(x_center)},{_fmt(y + backdrop_dy)})"
                 events.append(
                     f"Dialogue: 0,{start},{end},Backdrop,,0,0,0,,"
-                    f"{{{pos}{blur_tag}\\xbord{_fmt(pad_x)}\\ybord{_fmt(ybord)}}}{text}"
+                    f"{{{bpos}{blur_tag}\\xbord{_fmt(pad_x)}\\ybord{_fmt(ybord)}}}{text}"
                 )
             events.append(f"Dialogue: 1,{start},{end},Default,,0,0,0,,{{{pos}}}{text}")
     return header + "\n".join(events) + "\n"

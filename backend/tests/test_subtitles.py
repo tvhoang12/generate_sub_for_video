@@ -368,3 +368,71 @@ def test_phetsarath_ot_alias_uses_bundled_phetsarath():
     ass = to_ass([Cue(1, 0, 1000, "ສະບາຍດີ")], "Noto Sans", {"font": "Phetsarath OT", "font_size": 50})
     # Phetsarath: (2123 + 857) / 2048 = 1.455
     assert "Style: Default,Phetsarath,72.75," in ass
+
+
+def test_top_anchor_keeps_first_line_fixed_and_grows_downward():
+    from app.pipeline.subtitles import Cue, to_ass
+
+    cues = [
+        Cue(1, 0, 1000, "Single line"),
+        Cue(2, 1000, 2000, "First line\nSecond line"),
+    ]
+    ass = to_ass(cues, "Arial", {"margin_v": 60, "v_anchor": "top"}, video_width=720, video_height=1280)
+
+    # Top-center style alignment; the top line sits at the same place for 1 and 2 line cues
+    assert ",1,3.0,1.5,8,50,50,60,1" in ass
+    single, two_top, two_bottom = _positions(ass)
+    assert single == two_top
+    assert two_bottom[1] > two_top[1]
+    assert single[1] < 1280 / 2
+
+
+def test_top_line_baseline_matches_the_css_preview():
+    from app.pipeline.subtitles import to_ass
+
+    ass = to_ass([Cue(1, 0, 1000, "ព្រមទាំង")], "Kantumruy Pro",
+                 {"font_size": 50, "margin_v": 50, "mask_enabled": False, "v_anchor": "top"}, 1920, 1080)
+    # CSS line box top at margin_v; baseline is (line box - in-box baseline) below it
+    in_box_baseline = ((1.3 - 1.18) / 2 + 0.26) * 50
+    (_, y), = _positions(ass)
+    assert abs(y - (50 + 1.3 * 50 - in_box_baseline + 0.468 * 50)) < 0.02
+
+
+def test_top_anchor_fixed_mask_starts_at_the_top_margin():
+    from app.pipeline.subtitles import to_ass
+
+    cfg = {"margin_v": 80, "v_anchor": "top", "mask_by_text": False, "mask_padding_x": 20}
+    ass = to_ass([Cue(1, 0, 1000, "Hello")], "Arial", cfg, 1920, 1080)
+    # mask top = margin_v - pad_y (20 * 0.45)
+    assert r"\an7\pos(30,71)" in ass
+
+
+def test_config_set_on_1080p_keeps_relative_placement_on_720p():
+    from app.pipeline.subtitles import to_ass
+
+    cue = [Cue(1, 0, 1000, "Hello world")]
+    cfg = {"font_size": 60, "margin_v": 120, "margin_l": 60, "margin_r": 60, "mask_enabled": False}
+    full = to_ass(cue, "Arial", {**cfg, "ref_width": 1920, "ref_height": 1080}, 1920, 1080)
+    small = to_ass(cue, "Arial", {**cfg, "ref_width": 1920, "ref_height": 1080}, 1280, 720)
+    (x1, y1), = _positions(full)
+    (x2, y2), = _positions(small)
+    assert abs(x2 - x1 * 2 / 3) < 0.05 and abs(y2 - y1 * 2 / 3) < 0.05
+    # margins scaled into the style line too
+    assert ",40,40,80,1" in small
+
+
+def test_landscape_config_on_vertical_video_follows_height_for_margin_v():
+    from app.pipeline.subtitles import fit_config_to_frame
+
+    cfg = {"font_size": 50, "margin_v": 108, "margin_l": 192, "ref_width": 1920, "ref_height": 1080}
+    out = fit_config_to_frame(cfg, 1080, 1920)
+    assert out["font_size"] == 50  # short side 1080 on both
+    assert abs(out["margin_v"] - 192) < 1e-9  # 10% of the height on both
+    assert abs(out["margin_l"] - 108) < 1e-9  # 10% of the width on both
+
+
+def test_config_without_reference_frame_is_not_rescaled():
+    from app.pipeline.subtitles import fit_config_to_frame
+
+    cfg = {"font_size": 50, "margin_v": 60}
+    assert fit_config_to_frame(cfg, 1280, 720) is cfg
