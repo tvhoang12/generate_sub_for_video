@@ -1711,7 +1711,6 @@ export function SubtitleConfigCard({
                     <MoveVertical className="size-3.5 text-primary" aria-hidden />
                     <span>Vị trí theo chiều dọc ({anchorTop ? "Căn lề trên" : "Căn lề dưới"} MarginV)</span>
                   </span>
-                  <span className="font-mono font-bold text-primary">{effectiveMarginV} px</span>
                 </div>
 
                 <div role="radiogroup" aria-label="Căn phụ đề theo lề" className="grid grid-cols-2 gap-2">
