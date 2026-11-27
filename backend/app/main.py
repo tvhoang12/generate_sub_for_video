@@ -3,7 +3,6 @@
 import json
 import logging
 import shutil
-import zipfile
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -21,6 +20,7 @@ from .hls import HlsRunner, hls_router
 from .languages import LANGUAGES, SOURCE_LANGUAGES
 from .pipeline.runner import JobRunner, job_dir, safe_name
 from .usage_report import build_report
+from .zipstream import zip_response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -330,12 +330,9 @@ def _api_routes():
         files = _output_files(job)
         if job.status != JobStatus.DONE or not files:
             raise HTTPException(409, "Job chưa hoàn thành")
-        archive = job_dir(job_id) / f"{job_id}.zip"
-        # Videos are already compressed; storing is as small and much faster.
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as z:
-            for path in files:
-                z.write(path, path.name)
-        return FileResponse(archive, filename=f"{safe_name(job.title)}.zip")
+        # Streamed: no copy of the videos is written to disk for the download.
+        (job_dir(job_id) / f"{job_id}.zip").unlink(missing_ok=True)  # left by older versions
+        return zip_response([(p, p.name) for p in files], f"{safe_name(job.title)}.zip")
 
     return api
 

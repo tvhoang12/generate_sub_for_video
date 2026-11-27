@@ -4,9 +4,7 @@ import io
 import logging
 import os
 import shutil
-import tempfile
 import uuid
-import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -15,10 +13,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
-from starlette.background import BackgroundTask
 
 from ..config import settings
 from ..db import HlsJob, HlsJobStatus, get_session, utcnow
+from ..zipstream import zip_response
 from .renditions import get_sorted_renditions
 from .runner import get_existing_renditions, probe_height
 
@@ -384,30 +382,21 @@ def download_batch(
     date_str = datetime.now().strftime("%Y-%m-%d")
     zip_name = f"hls_batch_{len(valid_jobs)}_videos_{date_str}.zip"
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    tmp_path = Path(tmp.name)
-    tmp.close()
-
+    entries: list[tuple[Path, str]] = []
     used_folders: set[str] = set()
-    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as z:
-        for job, out_dir in valid_jobs:
-            raw_stem = Path(job.original_name).stem if job.original_name else f"job_{job.id[:8]}"
-            folder_name = f"{raw_stem}_hls"
-            if folder_name in used_folders:
-                folder_name = f"{raw_stem}_{job.id[:8]}_hls"
-            used_folders.add(folder_name)
+    for job, out_dir in valid_jobs:
+        raw_stem = Path(job.original_name).stem if job.original_name else f"job_{job.id[:8]}"
+        folder_name = f"{raw_stem}_hls"
+        if folder_name in used_folders:
+            folder_name = f"{raw_stem}_{job.id[:8]}_hls"
+        used_folders.add(folder_name)
+        entries.extend(
+            (p, f"{folder_name}/{p.relative_to(out_dir).as_posix()}")
+            for p in sorted(out_dir.rglob("*")) if p.is_file()
+        )
 
-            for file_path in out_dir.rglob("*"):
-                if file_path.is_file():
-                    rel_path = file_path.relative_to(out_dir)
-                    z.write(file_path, f"{folder_name}/{rel_path.as_posix()}")
-
-    return FileResponse(
-        tmp_path,
-        media_type="application/zip",
-        filename=zip_name,
-        background=BackgroundTask(tmp_path.unlink, missing_ok=True),
-    )
+    # Streamed: no temporary zip on disk (those used to pile up in the container's /tmp).
+    return zip_response(entries, zip_name)
 
 
 @hls_router.get("/api/hls/download/{job_id}")
@@ -428,24 +417,12 @@ def download_single(job_id: str, s: SessionDep, rendition: str | None = None):
     stem = Path(job.original_name).stem
     zip_name = f"{stem}_{rendition}_hls.zip" if rendition else f"{stem}_hls.zip"
 
-    # Create temporary zip archive
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    tmp_path = Path(tmp.name)
-    tmp.close()
-
     folder_prefix = f"{stem}_{rendition}_hls" if rendition else f"{stem}_hls"
-    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as z:
-        for file_path in source_dir.rglob("*"):
-            if file_path.is_file():
-                rel_path = file_path.relative_to(source_dir)
-                z.write(file_path, f"{folder_prefix}/{rel_path.as_posix()}")
-
-    return FileResponse(
-        tmp_path,
-        media_type="application/zip",
-        filename=zip_name,
-        background=BackgroundTask(tmp_path.unlink, missing_ok=True),
-    )
+    entries = [
+        (p, f"{folder_prefix}/{p.relative_to(source_dir).as_posix()}")
+        for p in sorted(source_dir.rglob("*")) if p.is_file()
+    ]
+    return zip_response(entries, zip_name)
 
 
 # ── Streaming route for HLS ─────────────────────────────────────────────────
