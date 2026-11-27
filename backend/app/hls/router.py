@@ -62,18 +62,13 @@ class JobsDeleteIn(BaseModel):
 def resolve_job_output_dir(job: HlsJob | None, job_id: str, s: Session | None = None) -> Path:
     """Resolve actual existing output directory for an HLS job.
 
-    Handles cases where storage path moved or was updated in .env (e.g. /var/www/hls vs /var/www/hls/hlsoutput).
+    Uses the path stored on the job, falling back to HLS_STORAGE_PATH/<job_id> when the
+    storage path was moved in .env.
     """
     candidates: list[Path] = []
     if job and job.output_dir:
         candidates.append(Path(job.output_dir))
-
-    candidates.extend([
-        settings.hls_storage_path / job_id,
-        settings.hls_storage_path / "hlsoutput" / job_id,
-        Path("/var/www/hls") / job_id,
-        Path("/var/www/hls/hlsoutput") / job_id,
-    ])
+    candidates.append(settings.hls_storage_path / job_id)
 
     for cand in candidates:
         if cand.is_dir():
