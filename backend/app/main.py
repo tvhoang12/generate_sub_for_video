@@ -85,7 +85,8 @@ def create_app(runner: JobRunner | None = None, hls_runner: HlsRunner | None = N
             file = settings.web_dist / path
             if path and file.is_file():
                 return FileResponse(file)
-            return FileResponse(settings.web_dist / "index.html")
+            # index.html names the hashed JS/CSS bundles: never cache it, or a deploy keeps showing the old UI
+            return FileResponse(settings.web_dist / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
 
